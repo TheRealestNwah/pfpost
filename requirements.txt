@@ -1,0 +1,7 @@
+# Secure credential storage on every OS (Credential Manager / Keychain /
+# Secret Service). Without it, pfpost falls back to Windows DPAPI and refuses
+# to store credentials at all on other platforms.
+keyring>=25
+
+# Desktop interface. The CLI works without it.
+PySide6>=6.7
