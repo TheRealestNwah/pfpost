@@ -143,8 +143,70 @@ def main():
     check("write-only explains the missing username",
           "write-only" in bar.detail.text(), bar.detail.text())
 
-    print("\n  secondary-text contrast")
+    print("\n  theme changes")
+    from PySide6.QtCore import QEvent
     from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtWidgets import QApplication as _QApp
+
+    # On a real platform setStyleSheet() emits PaletteChange, so an unguarded
+    # changeEvent handler recurses until the interpreter dies. The offscreen
+    # platform does NOT emit it, so that recursion cannot be reproduced here -
+    # removing the guard still passes any event-driven test. These checks
+    # therefore verify the guard's contract directly, which is the part that
+    # actually prevents the loop.
+    dark = QPalette()
+    dark.setColor(QPalette.Window, QColor("#1e1e1e"))
+    dark.setColor(QPalette.WindowText, QColor("#e0e0e0"))
+    light = QPalette()
+    light.setColor(QPalette.Window, QColor("#f0f0f0"))
+    light.setColor(QPalette.WindowText, QColor("#101010"))
+
+    bar.setPalette(dark)
+    bar.apply_theme()
+    check("applies the current palette",
+          bar._applied_colour == bar.dim_colour().name(),
+          "%s vs %s" % (bar._applied_colour, bar.dim_colour().name()))
+
+    before = bar._applied_colour
+    bar.apply_theme()
+    check("re-applying an unchanged theme is a no-op",
+          bar._applied_colour == before)
+
+    bar.setPalette(light)
+    bar.apply_theme()
+    check("follows a palette swap", bar._applied_colour == bar.dim_colour().name())
+
+    # The re-entrancy guard: while a restyle is in flight, a nested call must
+    # return without touching anything. This is what breaks the recursion.
+    #
+    # _applied_colour is forced to a value the current palette cannot produce,
+    # otherwise the equality short-circuit returns first and the guard is never
+    # exercised - which made an earlier version of this check pass even with
+    # the guard deleted.
+    bar.setPalette(dark)
+    bar.apply_theme()
+    sentinel = "#000000"
+    bar._applied_colour = sentinel
+    bar._applying = True
+    bar.apply_theme()
+    check("nested call is refused while restyling",
+          bar._applied_colour == sentinel,
+          "guard let a re-entrant call through: %s" % bar._applied_colour)
+    bar._applying = False
+    bar.apply_theme()
+    check("restyles normally once the guard clears",
+          bar._applied_colour == bar.dim_colour().name())
+
+    survived = True
+    try:
+        for palette in (dark, light, dark, light):
+            bar.setPalette(palette)
+            _QApp.sendEvent(bar, QEvent(QEvent.PaletteChange))
+    except RecursionError:
+        survived = False
+    check("repeated PaletteChange events stay stable", survived)
+
+    print("\n  secondary-text contrast")
 
     def luminance(colour):
         def channel(v):

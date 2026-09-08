@@ -143,6 +143,8 @@ class AccountBar(QWidget):
         self.button = QPushButton("Connect account")
         self.button.clicked.connect(self._clicked)
         self._connected = False
+        self._applying = False
+        self._applied_colour = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
@@ -170,12 +172,28 @@ class AccountBar(QWidget):
         )
 
     def apply_theme(self):
-        self.detail.setStyleSheet("color:%s" % self.dim_colour().name())
-        # Scoped to this widget so child labels and the button keep their own
-        # backgrounds.
-        self.setStyleSheet(
-            "#accountBar{background:palette(alternate-base);"
-            "border-bottom:1px solid %s;}" % self.dim_colour().name())
+        """Restyle for the current palette.
+
+        setStyleSheet() itself emits a PaletteChange, which re-enters
+        changeEvent - so this guards against recursion and does nothing when
+        the derived colour has not actually changed.
+        """
+        if self._applying:
+            return
+        colour = self.dim_colour().name()
+        if colour == self._applied_colour:
+            return
+        self._applying = True
+        try:
+            self._applied_colour = colour
+            self.detail.setStyleSheet("color:%s" % colour)
+            # Scoped to this widget so child labels and the button keep their
+            # own backgrounds.
+            self.setStyleSheet(
+                "#accountBar{background:palette(alternate-base);"
+                "border-bottom:1px solid %s;}" % colour)
+        finally:
+            self._applying = False
 
     def changeEvent(self, event):
         if event.type() == QEvent.PaletteChange:
