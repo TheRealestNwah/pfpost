@@ -10,8 +10,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtCore import QDateTime, QEvent, QSize, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
@@ -133,12 +133,12 @@ class AccountBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("accountBar")
         self.dot = QLabel("●")
         self.dot.setFixedWidth(14)
         self.primary = QLabel("Not connected")
         self.primary.setStyleSheet("font-weight:bold")
         self.detail = QLabel("")
-        self.detail.setStyleSheet("color:palette(mid)")
 
         self.button = QPushButton("Connect account")
         self.button.clicked.connect(self._clicked)
@@ -150,7 +150,37 @@ class AccountBar(QWidget):
         layout.addWidget(self.primary)
         layout.addWidget(self.detail, 1)
         layout.addWidget(self.button)
-        self.setStyleSheet("QWidget{background:palette(alternate-base);}")
+        self.apply_theme()
+
+    # Blend toward the background for secondary text. Fixed palette roles such
+    # as `mid` are not reliably legible across themes, so this derives the
+    # colour from the theme actually in use. 0.55 keeps contrast at or above
+    # 3.6:1 on light, dark and mid-grey palettes - see test_gui.py.
+    DIM_MIX = 0.55
+
+    def dim_colour(self) -> QColor:
+        palette = self.palette()
+        text = palette.color(QPalette.WindowText)
+        back = palette.color(QPalette.Window)
+        mix = self.DIM_MIX
+        return QColor(
+            round(text.red() * mix + back.red() * (1 - mix)),
+            round(text.green() * mix + back.green() * (1 - mix)),
+            round(text.blue() * mix + back.blue() * (1 - mix)),
+        )
+
+    def apply_theme(self):
+        self.detail.setStyleSheet("color:%s" % self.dim_colour().name())
+        # Scoped to this widget so child labels and the button keep their own
+        # backgrounds.
+        self.setStyleSheet(
+            "#accountBar{background:palette(alternate-base);"
+            "border-bottom:1px solid %s;}" % self.dim_colour().name())
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.PaletteChange:
+            self.apply_theme()
+        super().changeEvent(event)
 
     def _clicked(self):
         if self._connected:

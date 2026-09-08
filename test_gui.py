@@ -143,6 +143,34 @@ def main():
     check("write-only explains the missing username",
           "write-only" in bar.detail.text(), bar.detail.text())
 
+    print("\n  secondary-text contrast")
+    from PySide6.QtGui import QColor, QPalette
+
+    def luminance(colour):
+        def channel(v):
+            v = v / 255
+            return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        return (0.2126 * channel(colour.red())
+                + 0.7152 * channel(colour.green())
+                + 0.0722 * channel(colour.blue()))
+
+    def contrast(a, b):
+        high, low = sorted([luminance(a), luminance(b)], reverse=True)
+        return (high + 0.05) / (low + 0.05)
+
+    for label, bg, fg in [("dark", "#1e1e1e", "#e0e0e0"),
+                          ("light", "#f0f0f0", "#101010"),
+                          ("mid-grey", "#3c3c3c", "#dcdcdc")]:
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(bg))
+        palette.setColor(QPalette.WindowText, QColor(fg))
+        probe = type(bar)()
+        probe.setPalette(palette)
+        probe.apply_theme()
+        ratio = contrast(probe.dim_colour(), QColor(bg))
+        check("detail text readable on a %s theme (%.2f:1)" % (label, ratio),
+              ratio >= 3.0, "%.2f:1 is below the 3:1 floor" % ratio)
+
     print("\n  gating")
     composer.set_enabled(False)
     check("posting disabled while disconnected", not composer.post_now.isEnabled())
