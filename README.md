@@ -7,8 +7,10 @@ operating system's credential store, never into a file in the clear. The core
 is pure standard library; the only dependencies are `keyring` for cross-platform
 secret storage and `PySide6` for the optional GUI.
 
-Verified against **gram.social** (Pixelfed 0.12.9), including a workaround for
-instances whose web server caps request header size.
+Verified end to end against **gram.social** (Pixelfed 0.12.9) — registration,
+authorization, and live posting from both the CLI and the desktop app —
+including automatic handling of instances whose web server caps request header
+size.
 
 ## Why it works this way
 
