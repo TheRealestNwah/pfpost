@@ -108,6 +108,24 @@ pfpost.py      launcher for running from a checkout
 
 Both frontends drive the same core, so anything the CLI can do the GUI can too.
 
+## Desktop app
+
+```
+python pfpost.py gui
+```
+
+Drag images onto the window, edit alt text inline per image, write a caption
+against a live character counter, then post immediately or add it to the queue
+with a date picker. The queue table below shows pending, posted and failed
+items; hover a failed row to see the error.
+
+Every network call runs on a worker thread, so the window never freezes during
+an upload. If no account is connected the connect dialog opens on launch: enter
+your instance, and it registers the client and runs the browser authorization
+for you.
+
+Needs `PySide6`. The CLI works without it.
+
 ## Posting
 
 ```
@@ -213,6 +231,7 @@ used so nothing flashes a console window every 15 minutes.
 
 ```
 python test_pfpost.py
+python test_gui.py
 ```
 
 39 checks against a mock Pixelfed on port 47311, exercising the real request
@@ -222,4 +241,8 @@ app registration, token auto-refresh, validation, multipart encoding,
 missing-file handling. The mock can simulate an nginx header cap, so the
 scope-narrowing logic is tested rather than assumed.
 
-No network access and no credentials needed.
+`test_gui.py` builds the real widgets on Qt's offscreen platform, so it runs
+headless and in CI. It covers construction and the data path from the image
+table to a post payload - not appearance. It skips cleanly if PySide6 is absent.
+
+No network access and no credentials needed for either suite.
