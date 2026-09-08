@@ -239,6 +239,59 @@ class Session:
     def public_client(self) -> api.Pixelfed:
         return api.Pixelfed(self.instance)
 
+    # -- status and teardown ----------------------------------------------
+
+    def status(self) -> dict:
+        """Everything known about the connection without touching the network."""
+        expires_at = None
+        healthy = self.authorized
+        if self.authorized:
+            try:
+                expires_at = self._token_payload().get("expires_at")
+            except Exception:
+                # Credential present but unreadable - e.g. a keyring entry that
+                # was removed, or DPAPI data from a different Windows user.
+                healthy = False
+        return {
+            "configured": self.configured,
+            "connected": healthy,
+            "instance": self.instance or None,
+            "client_id": self.state.get("client_id"),
+            "scopes": self.scopes if self.configured else None,
+            "can_read": self.can_read,
+            "expires_at": expires_at,
+            "backend": store.backend_name(),
+            "header_limit": self.state.get("header_limit"),
+        }
+
+    def identity(self) -> str | None:
+        """@username, or None when the token has no read scope."""
+        if not self.can_read:
+            return None
+        me = self.client().verify_credentials()
+        return me.get("username")
+
+    def disconnect(self, forget_client: bool = True) -> None:
+        """Remove local credentials.
+
+        Pixelfed exposes no API endpoint for revoking a token, so this clears
+        what is stored here. Revoke server-side under Settings > Applications
+        on the instance if you also want to invalidate it there.
+        """
+        token_ref = self.state.pop("token", None)
+        if token_ref:
+            store.forget_secret(token_ref)
+        if forget_client:
+            secret_ref = self.state.pop("client_secret", None)
+            if secret_ref:
+                store.forget_secret(secret_ref)
+            for key in ("client_id", "scopes", "header_limit"):
+                self.state.pop(key, None)
+        self.save()
+
+    def revoke_url(self) -> str:
+        return "https://%s/settings/applications" % self.instance
+
     # -- convenience ------------------------------------------------------
 
     def header_limit_advice(self) -> str:

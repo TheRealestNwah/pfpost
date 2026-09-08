@@ -125,6 +125,70 @@ class ConnectDialog(QDialog):
         self.append("\nFailed: %s" % message)
 
 
+class AccountBar(QWidget):
+    """Always-visible connection state. A status-bar message is not an indicator."""
+
+    connect_requested = Signal()
+    disconnect_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dot = QLabel("●")
+        self.dot.setFixedWidth(14)
+        self.primary = QLabel("Not connected")
+        self.primary.setStyleSheet("font-weight:bold")
+        self.detail = QLabel("")
+        self.detail.setStyleSheet("color:palette(mid)")
+
+        self.button = QPushButton("Connect account")
+        self.button.clicked.connect(self._clicked)
+        self._connected = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.addWidget(self.dot)
+        layout.addWidget(self.primary)
+        layout.addWidget(self.detail, 1)
+        layout.addWidget(self.button)
+        self.setStyleSheet("QWidget{background:palette(alternate-base);}")
+
+    def _clicked(self):
+        if self._connected:
+            self.disconnect_requested.emit()
+        else:
+            self.connect_requested.emit()
+
+    def show_state(self, info: dict, username: str | None = None):
+        self._connected = bool(info.get("connected"))
+        if not info.get("configured"):
+            self.dot.setStyleSheet("color:#c0392b")
+            self.primary.setText("Not connected")
+            self.detail.setText("Connect an account to start posting")
+            self.button.setText("Connect account")
+            return
+        if not self._connected:
+            self.dot.setStyleSheet("color:#e67e22")
+            self.primary.setText("Not signed in")
+            self.detail.setText("Registered on %s - authorization needed"
+                                % info.get("instance", "?"))
+            self.button.setText("Sign in")
+            return
+
+        self.dot.setStyleSheet("color:#27ae60")
+        who = ("@%s" % username) if username else info.get("instance", "?")
+        self.primary.setText("Connected — %s" % who)
+
+        bits = []
+        if username:
+            bits.append(info.get("instance", ""))
+        bits.append("scopes: %s" % info.get("scopes"))
+        if not info.get("can_read"):
+            bits.append("write-only, so the account name is unavailable")
+        bits.append("secrets: %s" % info.get("backend"))
+        self.detail.setText("  |  ".join(b for b in bits if b))
+        self.button.setText("Disconnect")
+
+
 class Composer(QWidget):
     """Image well, caption, alt text, and the post/schedule actions."""
 
@@ -280,6 +344,13 @@ class Composer(QWidget):
         self.progress.setVisible(on)
         self.post_now.setEnabled(not on)
         self.schedule.setEnabled(not on)
+
+    def set_enabled(self, connected: bool):
+        """Posting needs an account; queueing does not, but both are gated so
+        the window never looks usable while disconnected."""
+        self.post_now.setEnabled(connected)
+        self.schedule.setEnabled(connected)
+        self.post_now.setToolTip("" if connected else "Connect an account first")
 
     def gather(self):
         images = self.images()
@@ -441,6 +512,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("pfpost")
         self.resize(880, 780)
 
+        self.account_bar = AccountBar()
         self.composer = Composer(self.session)
         self.queue_panel = QueuePanel(self.session)
 
@@ -449,19 +521,33 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.queue_panel)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        self.setCentralWidget(splitter)
 
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.account_bar)
+        layout.addWidget(splitter, 1)
+        self.setCentralWidget(central)
+
+        self.account_bar.connect_requested.connect(self.connect_account)
+        self.account_bar.disconnect_requested.connect(self.disconnect_account)
         self.composer.posted.connect(self.on_posted)
         self.composer.queued.connect(self.say)
         self.composer.status.connect(self.say)
         self.queue_panel.changed.connect(self.say)
 
-        connect_action = QAction("Connect account...", self)
-        connect_action.triggered.connect(self.connect_account)
+        self.connect_action = QAction("Connect account...", self)
+        self.connect_action.triggered.connect(self.connect_account)
+        self.disconnect_action = QAction("Disconnect", self)
+        self.disconnect_action.triggered.connect(self.disconnect_account)
         schedule_action = QAction("Scheduling help", self)
         schedule_action.triggered.connect(self.scheduling_help)
+
         menu = self.menuBar().addMenu("Account")
-        menu.addAction(connect_action)
+        menu.addAction(self.connect_action)
+        menu.addAction(self.disconnect_action)
+        menu.addSeparator()
         menu.addAction(schedule_action)
 
         self.statusBar().showMessage("Ready")
@@ -475,34 +561,80 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "pfpost", "Posted.\n\n%s" % url)
 
     def refresh_account(self):
-        if not self.session.configured or not self.session.authorized:
+        info = self.session.status()
+        self.account_bar.show_state(info)
+        self.disconnect_action.setEnabled(info["configured"])
+        self.composer.set_enabled(info["connected"])
+        if not info["connected"]:
             self.say("Not connected - use Account > Connect account")
             return
         self.say("Loading %s ..." % self.session.instance)
 
         def work():
-            return self.session.public_client().limits()
+            # One trip: instance limits, plus the account name when readable.
+            limits = self.session.public_client().limits()
+            username = None
+            try:
+                username = self.session.identity()
+            except Exception:
+                pass
+            return limits, username
 
         self.worker = Worker(work)
-        self.worker.done.connect(self.limits_loaded)
-        self.worker.failed.connect(lambda m: self.say("Could not load limits: %s" % m))
+        self.worker.done.connect(self.account_loaded)
+        self.worker.failed.connect(self.account_failed)
         self.worker.start()
 
-    def limits_loaded(self, limits):
+    def account_loaded(self, result):
+        limits, username = result
         self.composer.set_limits(limits)
-        bits = ["%s" % self.session.instance, "scopes: %s" % self.session.scopes,
-                "secrets: %s" % store.backend_name()]
+        self.account_bar.show_state(self.session.status(), username)
+        detail = []
         if limits.get("max_media_attachments"):
-            bits.append("max %d attachments" % limits["max_media_attachments"])
-        self.say(" | ".join(bits))
+            detail.append("max %d attachments" % limits["max_media_attachments"])
+        if limits.get("max_characters"):
+            detail.append("%d characters" % limits["max_characters"])
+        self.say("Ready. " + ", ".join(detail) if detail else "Ready.")
+
+    def account_failed(self, message):
+        self.account_bar.show_state(self.session.status())
+        self.say("Connected, but could not read instance details: %s" % message)
 
     def connect_account(self):
         dialog = ConnectDialog(self.session, self)
         if dialog.exec() == QDialog.Accepted:
-            self.session = Session()
-            self.composer.session = self.session
-            self.queue_panel.session = self.session
-            self.refresh_account()
+            self.adopt(Session())
+
+    def disconnect_account(self):
+        info = self.session.status()
+        if not info["configured"]:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Disconnect")
+        box.setIcon(QMessageBox.Question)
+        box.setText("Disconnect from %s?" % info["instance"])
+        box.setInformativeText(
+            "Credentials are removed from this machine.\n\n"
+            "Pixelfed has no token-revocation endpoint, so the token stays valid "
+            "on the server until you revoke it there:\n%s" % self.session.revoke_url())
+        keep = box.addButton("Sign out, keep client", QMessageBox.AcceptRole)
+        full = box.addButton("Remove everything", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked not in (keep, full):
+            return
+        self.session.disconnect(forget_client=(clicked is full))
+        self.adopt(Session())
+        self.say("Disconnected from %s." % info["instance"])
+
+    def adopt(self, session: Session):
+        """Swap in a fresh session after connect/disconnect."""
+        self.session = session
+        self.composer.session = session
+        self.queue_panel.session = session
+        self.refresh_account()
 
     def scheduling_help(self):
         script = Path(sys.argv[0]).resolve()
@@ -527,6 +659,6 @@ def main():
     app.setApplicationName("pfpost")
     window = MainWindow()
     window.show()
-    if not window.session.configured or not window.session.authorized:
+    if not window.session.status()["configured"]:
         window.connect_account()
     sys.exit(app.exec())

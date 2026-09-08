@@ -85,21 +85,57 @@ def cmd_auth(args):
 
 def cmd_whoami(args):
     session = Session()
-    if not session.can_read:
-        die("This token has `%s` scope only; whoami needs `read`.\n%s"
-            % (session.scopes, session.header_limit_advice()))
+    info = session.status()
+
+    if not info["configured"]:
+        print("Status     not connected")
+        print("\nRun:  pfpost register --instance <domain>")
+        return
+    if not info["connected"]:
+        print("Status     configured but not authorized")
+        print("Instance   %s" % info["instance"])
+        print("\nRun:  pfpost auth")
+        return
+
+    print("Status     connected")
+    print("Instance   %s" % info["instance"])
+    print("Client     %s" % info["client_id"])
+    print("Scopes     %s" % info["scopes"])
+    print("Storage    %s" % store.backend_description())
+    print("Token      %s" % ("expires " + pfqueue.local_str(info["expires_at"])
+                             if info["expires_at"] else "no expiry reported"))
+
+    if not info["can_read"]:
+        print("Account    unavailable - this token has no `read` scope")
+        advice = session.header_limit_advice()
+        if advice:
+            print("\n" + advice)
+        return
     try:
         me = session.client().verify_credentials()
-        expiry = session.token_expiry()
-    except (AuthError, api.ApiError, store.StorageError) as exc:
-        die(exc)
-    print("Account    @%s (%s)" % (me.get("username", "?"), me.get("display_name") or ""))
-    print("Instance   %s" % session.instance)
-    print("Posts      %s" % me.get("statuses_count", "?"))
-    print("Scopes     %s" % session.scopes)
-    print("Storage    %s" % store.backend_description())
-    print("Token      %s" % ("expires " + pfqueue.local_str(expiry) if expiry
-                             else "no expiry reported"))
+        print("Account    @%s (%s)"
+              % (me.get("username", "?"), me.get("display_name") or ""))
+        print("Posts      %s" % me.get("statuses_count", "?"))
+    except api.ApiError as exc:
+        print("Account    lookup failed: %s" % exc)
+
+
+def cmd_logout(args):
+    session = Session()
+    info = session.status()
+    if not info["configured"]:
+        print("Nothing to disconnect.")
+        return
+    session.disconnect(forget_client=not args.keep_client)
+    print("Disconnected from %s." % info["instance"])
+    if args.keep_client:
+        print("The registered client was kept; run `pfpost auth` to sign in again.")
+    else:
+        print("The client registration was removed too; run `pfpost register` "
+              "to reconnect.")
+    print("\nPixelfed has no token-revocation endpoint, so the token is only gone "
+          "from this machine.\nTo revoke it on the server as well, visit:\n  %s"
+          % ("https://%s/settings/applications" % info["instance"]))
 
 
 def cmd_info(args):
@@ -268,7 +304,12 @@ def build_parser() -> argparse.ArgumentParser:
     reg.set_defaults(func=cmd_register)
 
     sub.add_parser("auth", help="authorize in the browser").set_defaults(func=cmd_auth)
-    sub.add_parser("whoami", help="verify the stored token").set_defaults(func=cmd_whoami)
+    sub.add_parser("whoami", help="show connection status").set_defaults(func=cmd_whoami)
+
+    out = sub.add_parser("logout", help="remove stored credentials")
+    out.add_argument("--keep-client", action="store_true",
+                     help="keep the registered OAuth client, drop only the token")
+    out.set_defaults(func=cmd_logout)
     sub.add_parser("info", help="show instance limits").set_defaults(func=cmd_info)
     sub.add_parser("gui", help="open the desktop interface").set_defaults(func=cmd_gui)
 

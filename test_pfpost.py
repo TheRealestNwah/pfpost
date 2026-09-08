@@ -287,6 +287,41 @@ def main():
         check("surfaces an nginx header rejection", exc.is_header_too_large)
     HEADER_LIMIT[0] = None
 
+    print("\n9. connection status and disconnect")
+    info = session.status()
+    check("reports connected", info["connected"] and info["configured"])
+    check("reports the instance", info["instance"] == host)
+    check("reports scopes", info["scopes"] == "read write")
+    check("reports can_read", info["can_read"] is True)
+    check("reports the storage backend", info["backend"] == store.backend_name())
+    check("status makes no network call",
+          (RECEIVED.clear(), session.status(), len(RECEIVED))[2] == 0)
+
+    fresh = Session({})
+    blank = fresh.status()
+    check("blank session reports not configured",
+          not blank["configured"] and not blank["connected"])
+
+    # Sign out but keep the client registration.
+    kept = Session(dict(session.state))
+    kept.disconnect(forget_client=True)
+    check("full disconnect clears the token", "token" not in kept.state)
+    check("full disconnect clears the client", "client_id" not in kept.state)
+    check("full disconnect reports not configured", not kept.status()["configured"])
+
+    partial = Session(dict(session.state))
+    partial.disconnect(forget_client=False)
+    check("keep-client disconnect drops the token", "token" not in partial.state)
+    check("keep-client disconnect keeps the client",
+          partial.state.get("client_id") == session.state["client_id"])
+    check("keep-client stays configured but not connected",
+          partial.status()["configured"] and not partial.status()["connected"])
+
+    broken = Session(dict(session.state))
+    broken.state["token"] = "dpapi:bm90LWEtcmVhbC1ibG9i"   # unreadable credential
+    check("unreadable credential reports disconnected, not a crash",
+          broken.status()["connected"] is False)
+
     server.shutdown()
     print("\n%s" % ("All checks passed." if not FAILURES[0]
                     else "%d CHECK(S) FAILED." % FAILURES[0]))

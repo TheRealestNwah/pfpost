@@ -124,7 +124,33 @@ an upload. If no account is connected the connect dialog opens on launch: enter
 your instance, and it registers the client and runs the browser authorization
 for you.
 
+A bar across the top always shows whether an account is connected — green with
+your `@name`, amber when a client is registered but not yet authorized, red when
+there is nothing set up. Posting is disabled until you connect, so the window
+never looks usable when it isn't.
+
 Needs `PySide6`. The CLI works without it.
+
+## Checking and clearing the connection
+
+```
+python pfpost.py whoami
+python pfpost.py logout
+python pfpost.py logout --keep-client
+```
+
+`whoami` reports connection state whatever it is, including when the token has
+no `read` scope and the account name cannot be fetched. In the GUI the same is
+in the account bar, and **Account > Disconnect** offers the two options:
+
+- **Sign out, keep client** — drops the token, keeps the registration, so
+  signing back in is one browser trip.
+- **Remove everything** — drops the client too; reconnecting re-registers.
+
+Either way the credentials go from this machine only. **Pixelfed exposes no
+token-revocation endpoint**, so the token stays valid on the server until you
+revoke it under `Settings > Applications` on your instance. Both the CLI and the
+dialog say so and link there rather than implying a full sign-out.
 
 ## Posting
 
@@ -204,8 +230,10 @@ used so nothing flashes a console window every 15 minutes.
 - **Token refresh.** Tokens last a year. `pfpost` refreshes automatically once
   fewer than 7 days remain. Watch for the header-size issue above if it ever
   starts failing after a refresh.
-- **`whoami` needs `read` scope.** On a host that forced narrow scopes it will
-  say so rather than failing cryptically.
+- **`whoami` needs `read` scope** to show your account name. Without it, it
+  still reports instance, scopes, storage backend and token expiry.
+- **Logging out is local.** Pixelfed has no revocation endpoint; revoke on the
+  instance under Settings > Applications if you need the token dead server-side.
 - **Alt text** is sent as `description` on the media upload, not on the status.
 - **State** lives in `%APPDATA%\PixelfedPoster\` — `state.json` for credentials,
   `queue.json` for pending posts. Queued items reference images by path, so

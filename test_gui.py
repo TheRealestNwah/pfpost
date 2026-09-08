@@ -110,6 +110,46 @@ def main():
     window.queue_panel.reload()
     check("queue panel reloads", window.queue_panel.table.rowCount() >= 0)
 
+    print("\n  account bar")
+    bar = window.account_bar
+
+    bar.show_state({"configured": False, "connected": False})
+    check("disconnected state is visible",
+          "Not connected" in bar.primary.text(), bar.primary.text())
+    check("disconnected offers Connect", bar.button.text() == "Connect account")
+    check("disconnected dot is red", "c0392b" in bar.dot.styleSheet())
+
+    bar.show_state({"configured": True, "connected": False, "instance": "x.social"})
+    check("registered-but-unauthorized is distinguished",
+          "Not signed in" in bar.primary.text(), bar.primary.text())
+    check("unauthorized offers Sign in", bar.button.text() == "Sign in")
+
+    bar.show_state({"configured": True, "connected": True, "instance": "x.social",
+                    "scopes": "read write", "can_read": True, "backend": "keyring"},
+                   username="morro")
+    check("connected shows the username",
+          "@morro" in bar.primary.text(), bar.primary.text())
+    check("connected dot is green", "27ae60" in bar.dot.styleSheet())
+    check("connected offers Disconnect", bar.button.text() == "Disconnect")
+    check("detail names the instance and backend",
+          "x.social" in bar.detail.text() and "keyring" in bar.detail.text(),
+          bar.detail.text())
+
+    bar.show_state({"configured": True, "connected": True, "instance": "gram.social",
+                    "scopes": "write", "can_read": False, "backend": "dpapi"},
+                   username=None)
+    check("write-only falls back to the instance name",
+          "gram.social" in bar.primary.text(), bar.primary.text())
+    check("write-only explains the missing username",
+          "write-only" in bar.detail.text(), bar.detail.text())
+
+    print("\n  gating")
+    composer.set_enabled(False)
+    check("posting disabled while disconnected", not composer.post_now.isEnabled())
+    check("disabled button explains why", "Connect" in composer.post_now.toolTip())
+    composer.set_enabled(True)
+    check("posting enabled once connected", composer.post_now.isEnabled())
+
     print("\n%s" % ("GUI smoke test passed." if not FAILURES
                     else "%d GUI CHECK(S) FAILED: %s" % (len(FAILURES), FAILURES)))
     return 1 if FAILURES else 0
