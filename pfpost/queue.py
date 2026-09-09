@@ -86,6 +86,43 @@ def remove(item_id: str) -> None:
     store.save_queue(queue)
 
 
+def remove_many(item_ids) -> int:
+    """Drop several items at once. Returns how many were removed."""
+    wanted = set(item_ids)
+    if not wanted:
+        return 0
+    queue = store.load_queue()
+    remaining = [i for i in queue["items"] if i["id"] not in wanted]
+    removed = len(queue["items"]) - len(remaining)
+    queue["items"] = remaining
+    store.save_queue(queue)
+    return removed
+
+
+def clear(statuses=("posted",)) -> int:
+    """Drop every item in the given states. Returns how many went.
+
+    Pending items are never touched by this - cancelling a scheduled post is a
+    deliberate act, whereas tidying away finished ones is housekeeping.
+    """
+    wanted = set(statuses)
+    if "pending" in wanted:
+        raise QueueError("clear() will not drop pending posts; use remove().")
+    queue = store.load_queue()
+    remaining = [i for i in queue["items"] if i["status"] not in wanted]
+    removed = len(queue["items"]) - len(remaining)
+    queue["items"] = remaining
+    store.save_queue(queue)
+    return removed
+
+
+def counts() -> dict:
+    tally = {"pending": 0, "posted": 0, "failed": 0}
+    for item in store.load_queue()["items"]:
+        tally[item["status"]] = tally.get(item["status"], 0) + 1
+    return tally
+
+
 def due(now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     return [i for i in items()

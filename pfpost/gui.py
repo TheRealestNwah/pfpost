@@ -27,6 +27,9 @@ from . import api, queue as pfqueue, scheduler, store
 from .session import AuthError, DEFAULT_PORT, Session
 
 THUMB = 56
+# How often an open window checks its own queue. The scheduled task
+# handles the app being closed; this stops you waiting on its interval.
+AUTO_RUN_MS = 60_000
 IMAGE_FILTER = ("Media (*.png *.jpg *.jpeg *.gif *.webp *.avif *.heic *.mp4 *.mov);;"
                 "All files (*)")
 
@@ -544,13 +547,19 @@ class QueuePanel(QWidget):
 
         run = QPushButton("Run due now")
         run.clicked.connect(self.run_due)
+        self.clear_button = QPushButton("Clear posted")
+        self.clear_button.setToolTip(
+            "Remove finished items - posted and failed. Pending posts stay.")
+        self.clear_button.clicked.connect(self.clear_posted)
         remove = QPushButton("Remove selected")
+        remove.setToolTip("Remove the highlighted rows, cancelling them if pending")
         remove.clicked.connect(self.remove_selected)
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.reload)
 
         bar = QHBoxLayout()
         bar.addWidget(run)
+        bar.addWidget(self.clear_button)
         bar.addWidget(remove)
         bar.addWidget(refresh)
         bar.addStretch()
@@ -572,8 +581,31 @@ class QueuePanel(QWidget):
         layout.addWidget(self.table)
         layout.addLayout(bar)
         layout.addLayout(runner_bar)
+        # While the window is open there is no reason to wait for the background
+        # task's interval: due items are published on the minute. The scheduled
+        # task covers the app being closed.
+        self.auto_timer = QTimer(self)
+        self.auto_timer.setInterval(AUTO_RUN_MS)
+        self.auto_timer.timeout.connect(self.auto_run)
+        self.auto_timer.start()
+        QTimer.singleShot(3000, self.auto_run)     # catch up shortly after launch
+
         self.reload()
         self.refresh_runner()
+
+    def auto_run(self) -> str:
+        """Publish anything due, quietly. Returns why it did or did not run."""
+        if self.worker is not None and self.worker.isRunning():
+            return "busy"
+        try:
+            if not self.session.status()["connected"]:
+                return "disconnected"
+        except Exception:
+            return "disconnected"
+        if not pfqueue.due():
+            return "nothing due"
+        self.run_due()
+        return "running"
 
     # -- background runner ------------------------------------------------
 
@@ -598,14 +630,15 @@ class QueuePanel(QWidget):
             extra = ""
             if info.get("last_result") not in (None, 0, 267011):
                 extra = "  Last run reported code %s." % info["last_result"]
-            self.runner_label.setText("Background posting is on - the queue runs %s.%s"
-                                      % (when, extra))
+            self.runner_label.setText(
+                "Background posting is on - the queue runs %s while pfpost is "
+                "closed, and every minute while it is open.%s" % (when, extra))
             self.runner_label.setStyleSheet("")
             self.runner_button.setText("Disable background posting")
         else:
             self.runner_label.setText(
-                "Background posting is off - queued posts will not publish unless "
-                "you click Run due now.")
+                "Background posting is off - due posts publish while pfpost is "
+                "open, but nothing goes out once you close it.")
             self.runner_label.setStyleSheet("color:#e67e22")
             self.runner_button.setText("Enable background posting")
 
@@ -655,23 +688,45 @@ class QueuePanel(QWidget):
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
 
-    def selected_id(self):
-        rows = {i.row() for i in self.table.selectedIndexes()}
-        if not rows:
-            return None
-        return self.table.item(next(iter(rows)), 0).text()
+        tally = pfqueue.counts()
+        finished = tally.get("posted", 0) + tally.get("failed", 0)
+        self.clear_button.setEnabled(finished > 0)
+        self.clear_button.setText("Clear posted (%d)" % finished if finished
+                                  else "Clear posted")
+
+    def selected_ids(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        return [self.table.item(row, 0).text() for row in rows]
 
     def remove_selected(self):
-        item_id = self.selected_id()
-        if not item_id:
+        ids = self.selected_ids()
+        if not ids:
+            QMessageBox.information(
+                self, "pfpost",
+                "Select a row first, or use Clear posted to tidy up finished posts.")
             return
-        try:
-            pfqueue.remove(item_id)
-        except pfqueue.QueueError as exc:
-            QMessageBox.warning(self, "pfpost", str(exc))
+        pending = sum(1 for item in pfqueue.items(include_done=True)
+                      if item["id"] in ids and item["status"] == "pending")
+        if pending and QMessageBox.question(
+                self, "pfpost",
+                "Remove %d item%s?\n\n%d %s not been posted yet and will be "
+                "cancelled." % (len(ids), "" if len(ids) == 1 else "s", pending,
+                                "has" if pending == 1 else "have")) != QMessageBox.Yes:
             return
+        removed = pfqueue.remove_many(ids)
         self.reload()
-        self.changed.emit("Removed %s" % item_id)
+        self.changed.emit("Removed %d item%s." % (removed, "" if removed == 1 else "s"))
+
+    def clear_posted(self):
+        tally = pfqueue.counts()
+        finished = tally.get("posted", 0) + tally.get("failed", 0)
+        if not finished:
+            self.changed.emit("Nothing finished to clear.")
+            return
+        removed = pfqueue.clear(("posted", "failed"))
+        self.reload()
+        self.changed.emit("Cleared %d finished item%s."
+                          % (removed, "" if removed == 1 else "s"))
 
     def run_due(self):
         self.changed.emit("Running due posts ...")

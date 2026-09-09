@@ -208,13 +208,23 @@ python pfpost.py queue list --all
 python pfpost.py queue remove abc12345
 ```
 
+In the desktop app the queue table has **Clear posted**, which drops everything
+finished (posted and failed) and shows how many that is. Pending posts are never
+touched by it — cancelling a scheduled post is deliberate, so that is what
+**Remove selected** is for, and it warns before cancelling anything still
+pending.
+
 Publish everything due:
 
 ```
 python pfpost.py queue run
 ```
 
-**A queued post publishes only when something runs the queue.** In the desktop
+**A queued post publishes only when something runs the queue.** While the
+desktop app is open it checks every minute, so due posts go out without you
+clicking anything. The scheduled task below is what covers pfpost being closed —
+its interval is the worst-case delay in that case, not while the app is running.
+ In the desktop
 app, the row under the queue table says whether background posting is on and
 turns it on for you; queue something with it off and pfpost offers to enable it
 rather than letting the post sit there silently.

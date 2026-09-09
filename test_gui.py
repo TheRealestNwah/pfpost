@@ -151,8 +151,8 @@ def main():
     panel = window.queue_panel
 
     panel.runner_state({"registered": False})
-    check("off state warns that nothing will publish",
-          "will not publish" in panel.runner_label.text(), panel.runner_label.text())
+    check("off state warns what happens once pfpost is closed",
+          "close it" in panel.runner_label.text(), panel.runner_label.text())
     check("off state is highlighted", "e67e22" in panel.runner_label.styleSheet())
     check("off state offers Enable",
           panel.runner_button.text() == "Enable background posting")
@@ -176,6 +176,85 @@ def main():
 
     check("nudge fires once per session, not every queue",
           window._runner_nudged is False)
+
+    print("\n  queue housekeeping")
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from pfpost import queue as pfq
+
+    pfq.store.save_queue({"items": []})
+    keep = pfq.add([(a, "alt")], "still pending", "public",
+                   _dt.now(_tz.utc) + _td(days=1))
+    done = pfq.add([(a, "alt")], "done", "public", _dt.now(_tz.utc))
+    bad = pfq.add([(a, "alt")], "broke", "public", _dt.now(_tz.utc))
+    raw = pfq.store.load_queue()
+    for row in raw["items"]:
+        if row["id"] == done["id"]:
+            row["status"] = "posted"
+        if row["id"] == bad["id"]:
+            row["status"] = "failed"
+    pfq.store.save_queue(raw)
+
+    panel.reload()
+    check("clear button counts finished items",
+          "(2)" in panel.clear_button.text(), panel.clear_button.text())
+    check("clear button enabled when there is something to clear",
+          panel.clear_button.isEnabled())
+
+    panel.clear_posted()
+    remaining = [i["id"] for i in pfq.items(include_done=True)]
+    check("clearing removes posted and failed",
+          done["id"] not in remaining and bad["id"] not in remaining)
+    check("clearing keeps pending posts", keep["id"] in remaining, str(remaining))
+    check("clear button disables when nothing is finished",
+          not panel.clear_button.isEnabled())
+    check("clear button drops the count when empty",
+          panel.clear_button.text() == "Clear posted", panel.clear_button.text())
+
+    # Cancelling a scheduled post is deliberate; housekeeping must not do it.
+    try:
+        pfq.clear(("pending",))
+        check("clear refuses to drop pending posts", False)
+    except pfq.QueueError:
+        check("clear refuses to drop pending posts", True)
+
+    second = pfq.add([(a, "alt")], "another", "public",
+                     _dt.now(_tz.utc) + _td(days=2))
+    check("remove_many drops several at once",
+          pfq.remove_many([keep["id"], second["id"]]) == 2)
+    check("remove_many ignores unknown ids", pfq.remove_many(["nope"]) == 0)
+    check("remove_many on nothing is a no-op", pfq.remove_many([]) == 0)
+    check("counts tally by status", pfq.counts()["pending"] == 0)
+
+    print("\n  auto-run while open")
+    from pfpost.gui import AUTO_RUN_MS
+
+    check("timer is running", panel.auto_timer.isActive())
+    check("timer checks every minute", panel.auto_timer.interval() == AUTO_RUN_MS)
+    check("interval is well under the background task's",
+          AUTO_RUN_MS / 1000 < sched.DEFAULT_INTERVAL * 60)
+
+    pfq.store.save_queue({"items": []})
+    panel.session = Session({})                       # not connected
+    check("does nothing while disconnected", panel.auto_run() == "disconnected")
+
+    class _Connected:
+        def status(self):
+            return {"connected": True}
+    panel.session = _Connected()
+    check("does nothing with an empty queue", panel.auto_run() == "nothing due")
+
+    pfq.add([(a, "alt")], "overdue", "public", _dt.now(_tz.utc) - _td(minutes=1))
+    pfq.add([(a, "alt")], "future", "public", _dt.now(_tz.utc) + _td(days=1))
+    check("sees only the overdue item", len(pfq.due()) == 1, str(len(pfq.due())))
+
+    class _Busy:
+        def isRunning(self):
+            return True
+    panel.worker = _Busy()
+    check("does not start a second run while one is in flight",
+          panel.auto_run() == "busy")
+    panel.worker = None
+    pfq.store.save_queue({"items": []})
 
     print("\n  posted dialog")
     from pfpost.gui import PostedDialog
