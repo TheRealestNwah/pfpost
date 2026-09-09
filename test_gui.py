@@ -51,6 +51,9 @@ def check(label, condition, detail=""):
 
 def main():
     app = QApplication([])                                    # noqa: F841
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtWidgets import QApplication as _QApp
     from pfpost.gui import ConnectDialog, MainWindow
     from pfpost.session import Session
 
@@ -143,11 +146,37 @@ def main():
     check("write-only explains the missing username",
           "write-only" in bar.detail.text(), bar.detail.text())
 
-    print("\n  theme changes")
-    from PySide6.QtCore import QEvent
-    from PySide6.QtGui import QColor, QPalette
-    from PySide6.QtWidgets import QApplication as _QApp
+    print("\n  posted dialog")
+    from pfpost.gui import PostedDialog
 
+    posted = PostedDialog("https://gram.social/p/morro/123", window)
+    check("shows the link", posted.link.text().endswith("/p/morro/123"))
+    check("link field is read-only", posted.link.isReadOnly())
+    check("copy enabled for a real url", posted.copy_button.isEnabled())
+    check("open enabled for a real url", posted.open_button.isEnabled())
+
+    try:
+        _QApp.clipboard().setText("")
+        posted.copy_link()
+        copied = _QApp.clipboard().text()
+        check("copy puts the url on the clipboard",
+              copied == "https://gram.social/p/morro/123", copied)
+    except RuntimeError as exc:            # genuinely no clipboard on this host
+        print("  [SKIP] clipboard unavailable here (%s)" % exc)
+    check("copy button confirms the action", posted.copy_button.text() == "Copied")
+
+    # The instance supplies this string; only http(s) may reach the browser.
+    for bad in ("javascript:alert(1)", "file:///C:/Windows/System32", "", None,
+                "(no url returned)"):
+        guarded = PostedDialog(bad, window)
+        check("refuses to open %r" % (bad,),
+              guarded.url is None and not guarded.open_button.isEnabled())
+
+    missing = PostedDialog(None, window)
+    check("explains a missing link", "No link" in missing.link.text())
+    check("disabled buttons say why", "did not return" in missing.open_button.toolTip())
+
+    print("\n  theme changes")
     # On a real platform setStyleSheet() emits PaletteChange, so an unguarded
     # changeEvent handler recurses until the interpreter dies. The offscreen
     # platform does NOT emit it, so that recursion cannot be reproduced here -

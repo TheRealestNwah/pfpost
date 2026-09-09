@@ -121,6 +121,9 @@ against a live character counter, then post immediately or add it to the queue
 with a date picker. The queue table below shows pending, posted and failed
 items; hover a failed row to see the error.
 
+After a successful post a dialog shows the link with **Copy link** and **Open in
+browser** buttons; it stays open until you close it, so you can do both.
+
 Every network call runs on a worker thread, so the window never freezes during
 an upload. If no account is connected the connect dialog opens on launch: enter
 your instance, and it registers the client and runs the browser authorization

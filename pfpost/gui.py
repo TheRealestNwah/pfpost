@@ -10,8 +10,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QEvent, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPalette, QPixmap
+from PySide6.QtCore import (QDateTime, QEvent, QSize, Qt, QThread, QTimer,
+                            QUrl, Signal)
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QIcon,
+                           QPalette, QPixmap)
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
@@ -123,6 +125,67 @@ class ConnectDialog(QDialog):
         self.progress.hide()
         self.buttons.setEnabled(True)
         self.append("\nFailed: %s" % message)
+
+
+class PostedDialog(QDialog):
+    """Success dialog with the post link.
+
+    A QDialog rather than a QMessageBox: message boxes close on any button
+    press, so "Copy link" would dismiss the dialog before you could also open
+    it. Here only Close closes.
+    """
+
+    def __init__(self, url: str | None, parent=None):
+        super().__init__(parent)
+        # The instance supplies this string, so only ever hand a real web URL
+        # to the browser - never an arbitrary URI scheme.
+        self.url = url if (url or "").startswith(("http://", "https://")) else None
+        self.setWindowTitle("Posted")
+        self.setMinimumWidth(460)
+
+        heading = QLabel("Posted successfully.")
+        heading.setStyleSheet("font-weight:bold")
+
+        self.link = QLineEdit(self.url or (url or "No link returned by the instance."))
+        self.link.setReadOnly(True)
+        self.link.setCursorPosition(0)
+
+        self.copy_button = QPushButton("Copy link")
+        self.copy_button.clicked.connect(self.copy_link)
+        self.open_button = QPushButton("Open in browser")
+        self.open_button.clicked.connect(self.open_in_browser)
+        self.close_button = QPushButton("Close")
+        self.close_button.setDefault(True)
+        self.close_button.clicked.connect(self.accept)
+
+        for button in (self.copy_button, self.open_button):
+            button.setEnabled(self.url is not None)
+            if self.url is None:
+                button.setToolTip("The instance did not return a link for this post")
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.copy_button)
+        buttons.addWidget(self.open_button)
+        buttons.addStretch()
+        buttons.addWidget(self.close_button)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(heading)
+        layout.addWidget(self.link)
+        layout.addLayout(buttons)
+
+    def copy_link(self):
+        if not self.url:
+            return
+        QApplication.clipboard().setText(self.url)
+        self.link.selectAll()
+        self.copy_button.setText("Copied")
+        QTimer.singleShot(1500, lambda: self.copy_button.setText("Copy link"))
+
+    def open_in_browser(self):
+        if not self.url:
+            return
+        QDesktopServices.openUrl(QUrl(self.url))
 
 
 class AccountBar(QWidget):
@@ -606,7 +669,7 @@ class MainWindow(QMainWindow):
 
     def on_posted(self, url: str):
         self.say("Posted: %s" % url)
-        QMessageBox.information(self, "pfpost", "Posted.\n\n%s" % url)
+        PostedDialog(url, self).exec()
 
     def refresh_account(self):
         info = self.session.status()
