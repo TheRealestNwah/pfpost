@@ -334,10 +334,12 @@ class Composer(QWidget):
 
         self.visibility = QComboBox()
         self.visibility.addItems(["public", "unlisted", "private"])
+        self.visibility.setMinimumWidth(130)
 
         self.when = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600))
         self.when.setCalendarPopup(True)
         self.when.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.when.setMinimumWidth(230)
 
         self.post_now = QPushButton("Post now")
         self.post_now.setProperty("accent", True)

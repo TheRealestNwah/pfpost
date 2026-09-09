@@ -439,6 +439,24 @@ def main():
     check("primary actions are marked accent",
           composer.post_now.property("accent") is True)
 
+    # Styling ::drop-down replaces the sub-control, and Qt then draws no arrow -
+    # the visibility picker and date field end up looking like inert boxes.
+    # Strip comments first, or this matches the note explaining the rule.
+    import re as _re
+    rules = _re.sub(r"/\*.*?\*/", "", pftheme.stylesheet(light_tokens), flags=_re.S)
+    check("does not override the dropdown sub-control",
+          "::drop-down" not in rules)
+
+    # Stylesheet padding does not feed back into sizeHint, so widgets sized to
+    # fit their text get clipped - the date field lost its final characters.
+    from PySide6.QtGui import QFontMetrics
+    for name, widget, sample in (("date field", composer.when, "2026-09-08 21:50"),
+                                 ("visibility", composer.visibility, "unlisted")):
+        needed = QFontMetrics(widget.font()).horizontalAdvance(sample)
+        room = widget.minimumWidth() - needed
+        check("%s has room for its text and arrow (%dpx spare)" % (name, room),
+              room >= 30, "only %dpx spare" % room)
+
     print("\n  gating")
     composer.set_enabled(False)
     check("posting disabled while disconnected", not composer.post_now.isEnabled())

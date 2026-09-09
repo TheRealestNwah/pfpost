@@ -124,9 +124,10 @@ QComboBox:focus, QDateTimeEdit:focus {
 QLineEdit:read-only { background: %(surface_alt)s; color: %(muted)s; }
 QLineEdit:disabled, QPlainTextEdit:disabled { color: %(muted)s; background: %(bg)s; }
 
-QComboBox::drop-down, QDateTimeEdit::drop-down {
-    border: none; width: 20px;
-}
+/* Deliberately not styling ::drop-down. Doing so replaces the whole
+   sub-control, and Qt then draws no arrow at all, leaving both the
+   visibility picker and the date field looking like inert boxes. */
+QComboBox, QDateTimeEdit { padding-right: 4px; }
 QComboBox QAbstractItemView {
     background: %(surface)s;
     border: 1px solid %(border)s;
