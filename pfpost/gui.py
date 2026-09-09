@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import api, queue as pfqueue, scheduler, store
+from . import api, queue as pfqueue, scheduler, store, theme
 from .session import AuthError, DEFAULT_PORT, Session
 
 THUMB = 56
@@ -72,7 +72,9 @@ class ConnectDialog(QDialog):
         self.progress.hide()
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.button(QDialogButtonBox.Ok).setText("Connect")
+        ok = self.buttons.button(QDialogButtonBox.Ok)
+        ok.setText("Connect")
+        ok.setProperty("accent", True)
         self.buttons.accepted.connect(self.start)
         self.buttons.rejected.connect(self.reject)
 
@@ -158,6 +160,7 @@ class PostedDialog(QDialog):
         self.copy_button.clicked.connect(self.copy_link)
         self.open_button = QPushButton("Open in browser")
         self.open_button.clicked.connect(self.open_in_browser)
+        self.copy_button.setProperty("accent", True)
         self.close_button = QPushButton("Close")
         self.close_button.setDefault(True)
         self.close_button.clicked.connect(self.accept)
@@ -212,6 +215,9 @@ class AccountBar(QWidget):
         self._connected = False
         self._applying = False
         self._applied_colour = None
+        self._last_state: dict = {"configured": False, "connected": False}
+        self._last_username = None
+        self.tokens = theme.tokens(dark=False)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
@@ -220,23 +226,6 @@ class AccountBar(QWidget):
         layout.addWidget(self.detail, 1)
         layout.addWidget(self.button)
         self.apply_theme()
-
-    # Blend toward the background for secondary text. Fixed palette roles such
-    # as `mid` are not reliably legible across themes, so this derives the
-    # colour from the theme actually in use. 0.55 keeps contrast at or above
-    # 3.6:1 on light, dark and mid-grey palettes - see test_gui.py.
-    DIM_MIX = 0.55
-
-    def dim_colour(self) -> QColor:
-        palette = self.palette()
-        text = palette.color(QPalette.WindowText)
-        back = palette.color(QPalette.Window)
-        mix = self.DIM_MIX
-        return QColor(
-            round(text.red() * mix + back.red() * (1 - mix)),
-            round(text.green() * mix + back.green() * (1 - mix)),
-            round(text.blue() * mix + back.blue() * (1 - mix)),
-        )
 
     def apply_theme(self):
         """Restyle for the current palette.
@@ -247,20 +236,21 @@ class AccountBar(QWidget):
         """
         if self._applying:
             return
-        colour = self.dim_colour().name()
+        colour = self.tokens["muted"]
         if colour == self._applied_colour:
             return
         self._applying = True
         try:
             self._applied_colour = colour
             self.detail.setStyleSheet("color:%s" % colour)
-            # Scoped to this widget so child labels and the button keep their
-            # own backgrounds.
-            self.setStyleSheet(
-                "#accountBar{background:palette(alternate-base);"
-                "border-bottom:1px solid %s;}" % colour)
         finally:
             self._applying = False
+
+    def set_tokens(self, tokens: dict):
+        self.tokens = tokens
+        self._applied_colour = None
+        self.apply_theme()
+        self.show_state(self._last_state, self._last_username)
 
     def changeEvent(self, event):
         if event.type() == QEvent.PaletteChange:
@@ -274,22 +264,23 @@ class AccountBar(QWidget):
             self.connect_requested.emit()
 
     def show_state(self, info: dict, username: str | None = None):
+        self._last_state, self._last_username = info, username
         self._connected = bool(info.get("connected"))
         if not info.get("configured"):
-            self.dot.setStyleSheet("color:#c0392b")
+            self.dot.setStyleSheet("color:%s" % self.tokens["danger"])
             self.primary.setText("Not connected")
             self.detail.setText("Connect an account to start posting")
             self.button.setText("Connect account")
             return
         if not self._connected:
-            self.dot.setStyleSheet("color:#e67e22")
+            self.dot.setStyleSheet("color:%s" % self.tokens["warning"])
             self.primary.setText("Not signed in")
             self.detail.setText("Registered on %s - authorization needed"
                                 % info.get("instance", "?"))
             self.button.setText("Sign in")
             return
 
-        self.dot.setStyleSheet("color:#27ae60")
+        self.dot.setStyleSheet("color:%s" % self.tokens["success"])
         who = ("@%s" % username) if username else info.get("instance", "?")
         self.primary.setText("Connected — %s" % who)
 
@@ -311,8 +302,9 @@ class Composer(QWidget):
     queued = Signal(str)
     status = Signal(str)
 
-    def __init__(self, session: Session, parent=None):
+    def __init__(self, session: Session, parent=None, tokens: dict | None = None):
         super().__init__(parent)
+        self.tokens = tokens or theme.tokens(dark=False)
         self.session = session
         self.limits = {}
         self.worker = None
@@ -348,6 +340,7 @@ class Composer(QWidget):
         self.when.setDisplayFormat("yyyy-MM-dd HH:mm")
 
         self.post_now = QPushButton("Post now")
+        self.post_now.setProperty("accent", True)
         self.post_now.clicked.connect(self.do_post)
         self.schedule = QPushButton("Add to queue")
         self.schedule.clicked.connect(self.do_queue)
@@ -375,7 +368,9 @@ class Composer(QWidget):
         actions.addWidget(self.schedule)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Drag images here, or use Add images"))
+        drop_hint = QLabel("Drag images here, or use Add images")
+        drop_hint.setObjectName("dropHint")
+        layout.addWidget(drop_hint)
         layout.addWidget(self.table)
         layout.addLayout(buttons)
         layout.addWidget(self.caption)
@@ -454,7 +449,8 @@ class Composer(QWidget):
         self.counter.setText("%d characters" % used if not cap
                              else "%d / %d characters" % (used, cap))
         over = bool(cap and used > cap)
-        self.counter.setStyleSheet("color:#c0392b;font-weight:bold" if over else "")
+        self.counter.setStyleSheet(
+            "color:%s;font-weight:bold" % self.tokens["danger"] if over else "")
 
     def busy(self, on: bool):
         self.progress.setVisible(on)
@@ -601,8 +597,9 @@ class Composer(QWidget):
 class QueuePanel(QWidget):
     changed = Signal(str)
 
-    def __init__(self, session: Session, parent=None):
+    def __init__(self, session: Session, parent=None, tokens: dict | None = None):
         super().__init__(parent)
+        self.tokens = tokens or theme.tokens(dark=False)
         self.session = session
         self.worker = None
 
@@ -615,6 +612,7 @@ class QueuePanel(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
 
         run = QPushButton("Run due now")
+        run.setProperty("accent", True)
         run.clicked.connect(self.run_due)
         self.clear_button = QPushButton("Clear posted")
         self.clear_button.setToolTip(
@@ -646,7 +644,9 @@ class QueuePanel(QWidget):
         runner_bar.addWidget(self.runner_button)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Queue"))
+        queue_heading = QLabel("Queue")
+        queue_heading.setObjectName("sectionLabel")
+        layout.addWidget(queue_heading)
         layout.addWidget(self.table)
         layout.addLayout(bar)
         layout.addLayout(runner_bar)
@@ -708,7 +708,7 @@ class QueuePanel(QWidget):
             self.runner_label.setText(
                 "Background posting is off - due posts publish while pfpost is "
                 "open, but nothing goes out once you close it.")
-            self.runner_label.setStyleSheet("color:#e67e22")
+            self.runner_label.setStyleSheet("color:%s" % self.tokens["warning"])
             self.runner_button.setText("Enable background posting")
 
     def toggle_runner(self):
@@ -820,8 +820,9 @@ class QueuePanel(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, tokens: dict | None = None):
         super().__init__()
+        self.tokens = tokens or theme.tokens(dark=False)
         self.session = Session()
         self.worker = None
         self._runner_nudged = False
@@ -829,8 +830,9 @@ class MainWindow(QMainWindow):
         self.resize(880, 780)
 
         self.account_bar = AccountBar()
-        self.composer = Composer(self.session)
-        self.queue_panel = QueuePanel(self.session)
+        self.account_bar.set_tokens(self.tokens)
+        self.composer = Composer(self.session, tokens=self.tokens)
+        self.queue_panel = QueuePanel(self.session, tokens=self.tokens)
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.composer)
@@ -977,10 +979,24 @@ class MainWindow(QMainWindow):
         self.queue_panel.session = session
         self.refresh_account()
 
+def apply_theme(app) -> dict:
+    """Paint the application in Pixelfed's palette and return the tokens."""
+    tokens = theme.tokens(theme.is_dark(app))
+    app.setStyleSheet(theme.stylesheet(tokens))
+    return tokens
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("pfpost")
-    window = MainWindow()
+    app.setApplicationDisplayName("pfpost")
+    try:
+        app.setWindowIcon(theme.make_icon())
+    except Exception:
+        pass                       # an icon is not worth failing to start over
+
+    tokens = apply_theme(app)
+    window = MainWindow(tokens)
     window.show()
     if not window.session.status()["configured"]:
         window.connect_account()

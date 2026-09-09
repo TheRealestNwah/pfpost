@@ -118,6 +118,8 @@ pfpost/
   queue.py     local scheduling queue
   cli.py       command line interface
   gui.py       desktop interface (PySide6)
+  theme.py     palette, stylesheet and app icon
+  scheduler.py Windows Task Scheduler integration
 pfpost.py      launcher for running from a checkout
 ```
 
@@ -148,6 +150,29 @@ there is nothing set up. Posting is disabled until you connect, so the window
 never looks usable when it isn't.
 
 Needs `PySide6`. The CLI works without it.
+
+### Theme
+
+The interface uses Pixelfed's own palette, read from a live instance rather than
+guessed:
+
+| Token | Value | Where it comes from |
+|---|---|---|
+| accent | `#10c5f8` | the instance's `theme-color` — the brand cyan |
+| primary | `#2c78bf` | Pixelfed's `--primary`, its link and button blue |
+| neutrals | `#212529` … `#f8f9fa` | Bootstrap's grey scale, which Pixelfed ships |
+
+Light and dark variants follow the desktop setting, and the dark palette is
+derived from the same hues rather than being a separate design. The dark
+variant lightens `primary` to `#4da3e8` and `danger` to `#f1707b`, because the
+light-mode values fall under the contrast floor on a dark ground.
+
+Contrast is asserted, not eyeballed: `test_gui.py` computes WCAG relative
+luminance for every text and status colour against both backgrounds in both
+palettes — body text to 4.5:1, secondary and status colours to 3:1.
+
+The app icon is drawn at runtime from the same two brand colours, so there is no
+binary asset to keep in sync.
 
 ## Checking and clearing the connection
 

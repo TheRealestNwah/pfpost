@@ -54,8 +54,11 @@ def main():
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QColor, QPalette
     from PySide6.QtWidgets import QApplication as _QApp
+    from pfpost import theme as pftheme
     from pfpost.gui import ConnectDialog, MainWindow
     from pfpost.session import Session
+
+    TOKENS = pftheme.tokens(dark=False)
 
     tmp = Path(tempfile.mkdtemp())
     a, b = tmp / "a.png", tmp / "b.png"
@@ -93,7 +96,9 @@ def main():
     check("counter shows the instance limit", "/ 500" in composer.counter.text(),
           composer.counter.text())
     composer.caption.setPlainText("x" * 501)
-    check("counter flags an over-long caption", "c0392b" in composer.counter.styleSheet())
+    check("counter flags an over-long caption",
+          TOKENS["danger"] in composer.counter.styleSheet(),
+          composer.counter.styleSheet())
 
     composer.caption.setPlainText("ok")
     check("gather accepts a valid post", composer.gather() is not None)
@@ -120,7 +125,8 @@ def main():
     check("disconnected state is visible",
           "Not connected" in bar.primary.text(), bar.primary.text())
     check("disconnected offers Connect", bar.button.text() == "Connect account")
-    check("disconnected dot is red", "c0392b" in bar.dot.styleSheet())
+    check("disconnected dot uses the danger token",
+          TOKENS["danger"] in bar.dot.styleSheet(), bar.dot.styleSheet())
 
     bar.show_state({"configured": True, "connected": False, "instance": "x.social"})
     check("registered-but-unauthorized is distinguished",
@@ -132,7 +138,8 @@ def main():
                    username="morro")
     check("connected shows the username",
           "@morro" in bar.primary.text(), bar.primary.text())
-    check("connected dot is green", "27ae60" in bar.dot.styleSheet())
+    check("connected dot uses the success token",
+          TOKENS["success"] in bar.dot.styleSheet(), bar.dot.styleSheet())
     check("connected offers Disconnect", bar.button.text() == "Disconnect")
     check("detail names the instance and backend",
           "x.social" in bar.detail.text() and "keyring" in bar.detail.text(),
@@ -153,7 +160,9 @@ def main():
     panel.runner_state({"registered": False})
     check("off state warns what happens once pfpost is closed",
           "close it" in panel.runner_label.text(), panel.runner_label.text())
-    check("off state is highlighted", "e67e22" in panel.runner_label.styleSheet())
+    check("off state is highlighted",
+          TOKENS["warning"] in panel.runner_label.styleSheet(),
+          panel.runner_label.styleSheet())
     check("off state offers Enable",
           panel.runner_button.text() == "Enable background posting")
     check("off state tracked", panel.runner_registered is False)
@@ -335,44 +344,27 @@ def main():
     check("explains a missing link", "No link" in missing.link.text())
     check("disabled buttons say why", "did not return" in missing.open_button.toolTip())
 
-    print("\n  theme changes")
-    # On a real platform setStyleSheet() emits PaletteChange, so an unguarded
+    print("\n  theme")
+    # setStyleSheet() emits PaletteChange on a real platform, so an unguarded
     # changeEvent handler recurses until the interpreter dies. The offscreen
-    # platform does NOT emit it, so that recursion cannot be reproduced here -
-    # removing the guard still passes any event-driven test. These checks
-    # therefore verify the guard's contract directly, which is the part that
-    # actually prevents the loop.
-    dark = QPalette()
-    dark.setColor(QPalette.Window, QColor("#1e1e1e"))
-    dark.setColor(QPalette.WindowText, QColor("#e0e0e0"))
-    light = QPalette()
-    light.setColor(QPalette.Window, QColor("#f0f0f0"))
-    light.setColor(QPalette.WindowText, QColor("#101010"))
+    # platform does NOT emit it, so the loop cannot be reproduced here - these
+    # checks verify the guard's contract, which is what actually breaks it.
+    dark_tokens = pftheme.tokens(dark=True)
+    light_tokens = pftheme.tokens(dark=False)
 
-    bar.setPalette(dark)
-    bar.apply_theme()
-    check("applies the current palette",
-          bar._applied_colour == bar.dim_colour().name(),
-          "%s vs %s" % (bar._applied_colour, bar.dim_colour().name()))
-
+    bar.set_tokens(dark_tokens)
+    check("applies the given tokens",
+          bar._applied_colour == dark_tokens["muted"], str(bar._applied_colour))
     before = bar._applied_colour
     bar.apply_theme()
-    check("re-applying an unchanged theme is a no-op",
-          bar._applied_colour == before)
+    check("re-applying unchanged tokens is a no-op", bar._applied_colour == before)
 
-    bar.setPalette(light)
-    bar.apply_theme()
-    check("follows a palette swap", bar._applied_colour == bar.dim_colour().name())
+    bar.set_tokens(light_tokens)
+    check("follows a token swap", bar._applied_colour == light_tokens["muted"])
 
-    # The re-entrancy guard: while a restyle is in flight, a nested call must
-    # return without touching anything. This is what breaks the recursion.
-    #
-    # _applied_colour is forced to a value the current palette cannot produce,
-    # otherwise the equality short-circuit returns first and the guard is never
-    # exercised - which made an earlier version of this check pass even with
+    # Force a mismatch, or the equality short-circuit returns before the guard
+    # is reached - which made an earlier version of this check pass even with
     # the guard deleted.
-    bar.setPalette(dark)
-    bar.apply_theme()
     sentinel = "#000000"
     bar._applied_colour = sentinel
     bar._applying = True
@@ -382,19 +374,18 @@ def main():
           "guard let a re-entrant call through: %s" % bar._applied_colour)
     bar._applying = False
     bar.apply_theme()
-    check("restyles normally once the guard clears",
-          bar._applied_colour == bar.dim_colour().name())
+    check("restyles once the guard clears",
+          bar._applied_colour == light_tokens["muted"])
 
     survived = True
     try:
-        for palette in (dark, light, dark, light):
-            bar.setPalette(palette)
+        for _ in range(4):
             _QApp.sendEvent(bar, QEvent(QEvent.PaletteChange))
     except RecursionError:
         survived = False
     check("repeated PaletteChange events stay stable", survived)
 
-    print("\n  secondary-text contrast")
+    print("\n  palette contrast")
 
     def luminance(colour):
         def channel(v):
@@ -404,22 +395,49 @@ def main():
                 + 0.7152 * channel(colour.green())
                 + 0.0722 * channel(colour.blue()))
 
-    def contrast(a, b):
-        high, low = sorted([luminance(a), luminance(b)], reverse=True)
+    def contrast(one, two):
+        high, low = sorted([luminance(QColor(one)), luminance(QColor(two))],
+                           reverse=True)
         return (high + 0.05) / (low + 0.05)
 
-    for label, bg, fg in [("dark", "#1e1e1e", "#e0e0e0"),
-                          ("light", "#f0f0f0", "#101010"),
-                          ("mid-grey", "#3c3c3c", "#dcdcdc")]:
-        palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(bg))
-        palette.setColor(QPalette.WindowText, QColor(fg))
-        probe = type(bar)()
-        probe.setPalette(palette)
-        probe.apply_theme()
-        ratio = contrast(probe.dim_colour(), QColor(bg))
-        check("detail text readable on a %s theme (%.2f:1)" % (label, ratio),
-              ratio >= 3.0, "%.2f:1 is below the 3:1 floor" % ratio)
+    # Body text to WCAG AA (4.5:1); secondary and status colours to the 3:1
+    # floor that applies to large or non-body text.
+    for name, t in (("light", light_tokens), ("dark", dark_tokens)):
+        for role, floor, ground in (("text", 4.5, "bg"), ("text", 4.5, "surface"),
+                                    ("muted", 3.0, "bg"), ("muted", 3.0, "surface"),
+                                    ("primary", 3.0, "bg"), ("danger", 3.0, "surface"),
+                                    ("success", 3.0, "surface"),
+                                    ("warning", 3.0, "surface")):
+            ratio = contrast(t[role], t[ground])
+            check("%s: %s on %s (%.2f:1)" % (name, role, ground, ratio),
+                  ratio >= floor, "below the %.1f:1 floor" % floor)
+        ratio = contrast(t["primary_text"], t["primary"])
+        check("%s: button label on primary (%.2f:1)" % (name, ratio), ratio >= 4.5)
+
+    check("both palettes define the same tokens",
+          set(light_tokens) == set(dark_tokens))
+    check("the brand cyan is carried through",
+          light_tokens["accent"] == dark_tokens["accent"] == "#10c5f8")
+
+    sheet = pftheme.stylesheet(dark_tokens)
+    check("stylesheet substitutes every token", "%(" not in sheet)
+    check("stylesheet styles the account bar", "#accountBar" in sheet)
+    check("stylesheet defines an accent button",
+          'QPushButton[accent="true"]' in sheet)
+
+    icon = pftheme.make_icon(128)
+    pixmap = icon.pixmap(128, 128)
+    image = pixmap.toImage()
+    check("icon renders", not pixmap.isNull() and pixmap.width() == 128)
+    check("icon centre is painted", image.pixelColor(64, 64).alpha() == 255)
+    check("icon corners are rounded, not square",
+          image.pixelColor(1, 1).alpha() == 0)
+
+    check("theme detection returns a bool",
+          isinstance(pftheme.is_dark(_QApp.instance()), bool))
+
+    check("primary actions are marked accent",
+          composer.post_now.property("accent") is True)
 
     print("\n  gating")
     composer.set_enabled(False)
