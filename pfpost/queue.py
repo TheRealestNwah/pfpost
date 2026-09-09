@@ -13,6 +13,11 @@ from pathlib import Path
 from . import api, store
 
 MAX_ATTEMPTS = 3
+# Wait this long after each failed attempt. Without a backoff, a runner that
+# checks every minute burns all three attempts inside three minutes, so one
+# brief outage or a single 429 permanently fails a post that would have gone
+# out fine ten minutes later.
+RETRY_BACKOFF_SECONDS = (120, 600, 1800)
 
 
 class QueueError(Exception):
@@ -123,10 +128,28 @@ def counts() -> dict:
     return tally
 
 
+def retry_at(item: dict) -> datetime | None:
+    raw = item.get("next_attempt_at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def due(now: datetime | None = None) -> list[dict]:
+    """Pending items whose time has come and whose retry backoff has elapsed."""
     now = now or datetime.now(timezone.utc)
-    return [i for i in items()
-            if datetime.fromisoformat(i["post_at"]) <= now]
+    ready = []
+    for item in items():
+        if datetime.fromisoformat(item["post_at"]) > now:
+            continue
+        wait_until = retry_at(item)
+        if wait_until and wait_until > now:
+            continue
+        ready.append(item)
+    return ready
 
 
 def run(session, limit: int = 0, on_event=None) -> list[dict]:
@@ -175,11 +198,20 @@ def run(session, limit: int = 0, on_event=None) -> list[dict]:
             emit("posted", live, live.get("result_url") or "")
         except (api.ApiError, api.ValidationError) as exc:
             live["error"] = str(exc)[:400]
-            if live["attempts"] >= MAX_ATTEMPTS or isinstance(exc, api.ValidationError):
+            # A rejected payload will be rejected identically next time, so
+            # retrying it only delays telling the user.
+            fatal = isinstance(exc, api.ValidationError)
+            if fatal or live["attempts"] >= MAX_ATTEMPTS:
                 live["status"] = "failed"
+                live.pop("next_attempt_at", None)
                 emit("failed", live, live["error"])
             else:
-                emit("retry", live, live["error"])
+                wait = RETRY_BACKOFF_SECONDS[
+                    min(live["attempts"] - 1, len(RETRY_BACKOFF_SECONDS) - 1)]
+                live["next_attempt_at"] = (
+                    datetime.now(timezone.utc) + timedelta(seconds=wait)).isoformat()
+                emit("retry", live, "%s (next attempt in %d minutes)"
+                     % (live["error"], round(wait / 60)))
         store.save_queue(queue)
         processed.append(live)
 

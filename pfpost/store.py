@@ -17,6 +17,7 @@ import base64
 import ctypes
 import json
 import os
+import subprocess
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -185,7 +186,17 @@ def save_state(state: dict) -> None:
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
     tmp.replace(p)
     if IS_WINDOWS:
-        os.system('icacls "%s" /inheritance:r /grant:r "%%USERNAME%%":F >nul 2>&1' % p)
+        # subprocess, not os.system: os.system spawns cmd.exe, which flashes a
+        # console window under pythonw.exe - and this runs on every token save.
+        try:
+            subprocess.run(
+                ["icacls", str(p), "/inheritance:r", "/grant:r",
+                 "%s:F" % os.environ.get("USERNAME", "")],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=15, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass       # tightening the ACL is best-effort; DPAPI is the real guard
     else:
         try:
             os.chmod(p, 0o600)

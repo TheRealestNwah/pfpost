@@ -322,6 +322,37 @@ def main():
     check("unreadable credential reports disconnected, not a crash",
           broken.status()["connected"] is False)
 
+    print("\n9b. retry backoff")
+    # A one-minute runner must not burn all three attempts in three minutes.
+    store.save_queue({"items": []})
+    overdue = pfqueue.add([(img_a, None)], "will fail", "public",
+                          now - timedelta(minutes=5))
+    raw = store.load_queue()
+    raw["items"][0]["attempts"] = 1
+    raw["items"][0]["next_attempt_at"] = (
+        now + timedelta(minutes=2)).isoformat()
+    store.save_queue(raw)
+    check("an item inside its backoff is not due", pfqueue.due() == [])
+
+    raw = store.load_queue()
+    raw["items"][0]["next_attempt_at"] = (now - timedelta(seconds=1)).isoformat()
+    store.save_queue(raw)
+    check("an item past its backoff is due again", len(pfqueue.due()) == 1)
+
+    raw = store.load_queue()
+    raw["items"][0]["next_attempt_at"] = "not a timestamp"
+    store.save_queue(raw)
+    check("a corrupt backoff stamp does not hide the item",
+          len(pfqueue.due()) == 1)
+
+    check("backoff grows with each attempt",
+          list(pfqueue.RETRY_BACKOFF_SECONDS)
+          == sorted(pfqueue.RETRY_BACKOFF_SECONDS)
+          and pfqueue.RETRY_BACKOFF_SECONDS[0] >= 60)
+    check("first retry waits longer than the one-minute runner",
+          pfqueue.RETRY_BACKOFF_SECONDS[0] > 60)
+    pfqueue.remove(overdue["id"])
+
     print("\n10. schedule command output")
     import io
     from contextlib import redirect_stdout
