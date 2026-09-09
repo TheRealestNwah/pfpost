@@ -17,12 +17,13 @@ from PySide6.QtGui import (QAction, QColor, QDesktopServices, QIcon,
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
+    QProgressBar,
     QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
 
-from . import api, queue as pfqueue, store
+from . import api, queue as pfqueue, scheduler, store
 from .session import AuthError, DEFAULT_PORT, Session
 
 THUMB = 56
@@ -554,11 +555,90 @@ class QueuePanel(QWidget):
         bar.addWidget(refresh)
         bar.addStretch()
 
+        # Queued posts publish only when something runs the queue. Say so.
+        self.runner_label = QLabel("Checking background posting ...")
+        self.runner_button = QPushButton("Enable background posting")
+        self.runner_button.clicked.connect(self.toggle_runner)
+        self.runner_button.setEnabled(False)
+        self.runner_registered = False
+        self.runner_worker = None
+
+        runner_bar = QHBoxLayout()
+        runner_bar.addWidget(self.runner_label, 1)
+        runner_bar.addWidget(self.runner_button)
+
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Queue"))
         layout.addWidget(self.table)
         layout.addLayout(bar)
+        layout.addLayout(runner_bar)
         self.reload()
+        self.refresh_runner()
+
+    # -- background runner ------------------------------------------------
+
+    def refresh_runner(self):
+        if not scheduler.available():
+            self.runner_label.setText(
+                "Background posting needs Windows - run `pfpost queue run` from cron "
+                "or a timer instead.")
+            self.runner_button.hide()
+            return
+        self.runner_worker = Worker(scheduler.status)
+        self.runner_worker.done.connect(self.runner_state)
+        self.runner_worker.failed.connect(
+            lambda m: self.runner_state({"registered": False}))
+        self.runner_worker.start()
+
+    def runner_state(self, info: dict):
+        self.runner_registered = bool(info.get("registered"))
+        self.runner_button.setEnabled(True)
+        if self.runner_registered:
+            when = scheduler.describe_interval(info.get("interval", ""))
+            extra = ""
+            if info.get("last_result") not in (None, 0, 267011):
+                extra = "  Last run reported code %s." % info["last_result"]
+            self.runner_label.setText("Background posting is on - the queue runs %s.%s"
+                                      % (when, extra))
+            self.runner_label.setStyleSheet("")
+            self.runner_button.setText("Disable background posting")
+        else:
+            self.runner_label.setText(
+                "Background posting is off - queued posts will not publish unless "
+                "you click Run due now.")
+            self.runner_label.setStyleSheet("color:#e67e22")
+            self.runner_button.setText("Enable background posting")
+
+    def toggle_runner(self):
+        if self.runner_registered:
+            if QMessageBox.question(
+                    self, "pfpost",
+                    "Turn off background posting?\n\nQueued posts will then only "
+                    "publish when you click Run due now.") != QMessageBox.Yes:
+                return
+            action, args = scheduler.unregister, ()
+        else:
+            minutes, ok = QInputDialog.getInt(
+                self, "Enable background posting",
+                "Check the queue every how many minutes?",
+                scheduler.DEFAULT_INTERVAL, 1, 1440, 1)
+            if not ok:
+                return
+            action, args = scheduler.register, (minutes,)
+
+        self.runner_button.setEnabled(False)
+        self.runner_label.setText("Updating Windows Task Scheduler ...")
+        self.runner_worker = Worker(action, *args)
+        self.runner_worker.done.connect(lambda _=None: self.refresh_runner())
+        self.runner_worker.failed.connect(self.runner_failed)
+        self.runner_worker.start()
+
+    def runner_failed(self, message):
+        self.refresh_runner()
+        QMessageBox.critical(
+            self, "pfpost",
+            "Could not update the scheduled task.\n\n%s\n\n"
+            "You can still publish with Run due now." % message)
 
     def reload(self):
         rows = pfqueue.items(include_done=True)
@@ -620,6 +700,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.session = Session()
         self.worker = None
+        self._runner_nudged = False
         self.setWindowTitle("pfpost")
         self.resize(880, 780)
 
@@ -644,7 +725,7 @@ class MainWindow(QMainWindow):
         self.account_bar.connect_requested.connect(self.connect_account)
         self.account_bar.disconnect_requested.connect(self.disconnect_account)
         self.composer.posted.connect(self.on_posted)
-        self.composer.queued.connect(self.say)
+        self.composer.queued.connect(self.on_queued)
         self.composer.status.connect(self.say)
         self.queue_panel.changed.connect(self.say)
 
@@ -652,14 +733,10 @@ class MainWindow(QMainWindow):
         self.connect_action.triggered.connect(self.connect_account)
         self.disconnect_action = QAction("Disconnect", self)
         self.disconnect_action.triggered.connect(self.disconnect_account)
-        schedule_action = QAction("Scheduling help", self)
-        schedule_action.triggered.connect(self.scheduling_help)
 
         menu = self.menuBar().addMenu("Account")
         menu.addAction(self.connect_action)
         menu.addAction(self.disconnect_action)
-        menu.addSeparator()
-        menu.addAction(schedule_action)
 
         self.statusBar().showMessage("Ready")
         self.refresh_account()
@@ -670,6 +747,25 @@ class MainWindow(QMainWindow):
     def on_posted(self, url: str):
         self.say("Posted: %s" % url)
         PostedDialog(url, self).exec()
+
+    def on_queued(self, message: str):
+        """Queueing is a silent no-op unless something runs the queue, so say so
+        at the moment the expectation is formed rather than in a help menu."""
+        self.say(message)
+        self.queue_panel.reload()
+        if self.queue_panel.runner_registered or self._runner_nudged:
+            return
+        if not scheduler.available():
+            return
+        self._runner_nudged = True     # ask once per session, not every time
+        answer = QMessageBox.question(
+            self, "Nothing will publish this yet",
+            "%s.\n\nBackground posting is off, so this will only go out when you "
+            "click Run due now with pfpost open.\n\nTurn on background posting?"
+            % message,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            self.queue_panel.toggle_runner()
 
     def refresh_account(self):
         info = self.session.status()
@@ -746,24 +842,6 @@ class MainWindow(QMainWindow):
         self.composer.session = session
         self.queue_panel.session = session
         self.refresh_account()
-
-    def scheduling_help(self):
-        script = Path(sys.argv[0]).resolve()
-        python = Path(sys.executable).resolve()
-        runner = python.with_name("pythonw.exe")
-        runner = runner if runner.exists() else python
-        QMessageBox.information(self, "Scheduling", (
-            "The queue only publishes when something runs it.\n\n"
-            "Register a Windows task that drains it every 15 minutes:\n\n"
-            "$action = New-ScheduledTaskAction -Execute '%s' "
-            "-Argument '\"%s\" queue run'\n"
-            "$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) "
-            "-RepetitionInterval (New-TimeSpan -Minutes 15)\n"
-            "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable\n"
-            "Register-ScheduledTask -TaskName 'Pixelfed Poster' -Action $action "
-            "-Trigger $trigger -Settings $settings\n\n"
-            "Or run `pfpost schedule` for the full command." % (runner, script)))
-
 
 def main():
     app = QApplication(sys.argv)

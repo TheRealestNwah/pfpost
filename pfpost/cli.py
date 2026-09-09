@@ -8,7 +8,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from . import api, queue as pfqueue, store
+from . import api, queue as pfqueue, scheduler as pfscheduler, store
 from .session import AuthError, DEFAULT_PORT, Session
 
 VISIBILITIES = ["public", "unlisted", "private"]
@@ -246,11 +246,44 @@ def cmd_queue_run(args):
 
 
 def cmd_schedule(args):
-    script = Path(sys.argv[0]).resolve()
-    python = Path(sys.executable).resolve()
-    pythonw = python.with_name("pythonw.exe")
-    runner = pythonw if pythonw.exists() else python
     task, every = args.name, args.every
+
+    if args.status:
+        info = pfscheduler.status(task)
+        if info.get("unsupported"):
+            die("Background posting via Task Scheduler is Windows-only.")
+        if not info["registered"]:
+            print("Background posting is off. Enable it with:  pfpost schedule --install")
+            return
+        print("Background posting  on, %s" % pfscheduler.describe_interval(info["interval"]))
+        print("State               %s" % info["state"])
+        print("Last run            %s (result %s)"
+              % (info["last_run"] or "never", info["last_result"]))
+        print("Next run            %s" % (info["next_run"] or "unknown"))
+        return
+
+    if args.install:
+        try:
+            info = pfscheduler.register(every, task)
+        except pfscheduler.SchedulerError as exc:
+            die(exc)
+        print("Background posting enabled - the queue runs %s."
+              % pfscheduler.describe_interval(info.get("interval", "")))
+        print("Turn it off with:  pfpost schedule --remove")
+        return
+
+    if args.remove:
+        try:
+            pfscheduler.unregister(task)
+        except pfscheduler.SchedulerError as exc:
+            die(exc)
+        print("Background posting disabled. Queued posts now publish only when "
+              "you run `pfpost queue run`.")
+        return
+
+    executable, arguments, workdir = pfscheduler.runner_command()
+    runner, script = executable, arguments.split('" ')[0].lstrip('"')
+    print("Tip: `pfpost schedule --install` does all of this for you.\n")
 
     print("Register a task that drains the queue every %d minutes." % every)
     print("Paste into PowerShell - no administrator rights needed:\n")
@@ -351,8 +384,15 @@ def build_parser() -> argparse.ArgumentParser:
     qrun.set_defaults(func=cmd_queue_run)
 
     sched = sub.add_parser("schedule", help="print the Task Scheduler command")
-    sched.add_argument("--every", type=int, default=15, help="minutes between checks")
-    sched.add_argument("--name", default="Pixelfed Poster", help="scheduled task name")
+    sched.add_argument("--every", type=int, default=pfscheduler.DEFAULT_INTERVAL,
+                       help="minutes between queue checks")
+    sched.add_argument("--name", default=pfscheduler.TASK_NAME,
+                       help="scheduled task name")
+    sched.add_argument("--install", action="store_true",
+                       help="register the task instead of printing the commands")
+    sched.add_argument("--remove", action="store_true", help="unregister the task")
+    sched.add_argument("--status", action="store_true",
+                       help="report whether background posting is on")
     sched.set_defaults(func=cmd_schedule)
 
     return parser

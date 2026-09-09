@@ -323,15 +323,21 @@ def main():
           broken.status()["connected"] is False)
 
     print("\n10. schedule command output")
-    import argparse
     import io
     from contextlib import redirect_stdout
     from pfpost import cli
 
+    # Parse real arguments rather than hand-building a Namespace, so new flags
+    # and changed defaults are picked up instead of silently diverging.
+    parsed_args = cli.build_parser().parse_args(["schedule", "--every", "15"])
     buffer = io.StringIO()
     with redirect_stdout(buffer):
-        cli.cmd_schedule(argparse.Namespace(every=15, name="Pixelfed Poster"))
+        cli.cmd_schedule(parsed_args)
     text = buffer.getvalue()
+
+    check("plain schedule neither installs nor removes",
+          parsed_args.install is False and parsed_args.remove is False
+          and parsed_args.status is False)
 
     check("names the interval", "-Minutes 15" in text)
     # Without an explicit duration the trigger gets an empty Duration and
@@ -341,6 +347,64 @@ def main():
     check("survives sleep and reboot", "-StartWhenAvailable" in text)
     check("quotes the script path for spaces", '\\"' in text or '"' in text)
     check("offers a removal command", "Unregister-ScheduledTask" in text)
+
+    print("\n11. background runner (no task is created)")
+    from pfpost import scheduler as sched
+
+    cmd = sched.build_register_command(
+        r"C:\Python\pythonw.exe", r'"D:\Pixelfed Poster\pfpost.py" queue run',
+        r"D:\Pixelfed Poster", every=15, name="Pixelfed Poster")
+    check("registers an action, trigger and settings",
+          all(k in cmd for k in ("New-ScheduledTaskAction", "New-ScheduledTaskTrigger",
+                                 "New-ScheduledTaskSettingsSet",
+                                 "Register-ScheduledTask")))
+    check("keeps the repetition duration", "-RepetitionDuration" in cmd)
+    check("survives sleep and reboot", "-StartWhenAvailable" in cmd)
+    check("overwrites an existing task", "-Force" in cmd)
+    check("passes the working directory", "-WorkingDirectory" in cmd)
+
+    # Paths with an apostrophe would otherwise break out of the PowerShell
+    # string and execute whatever followed.
+    nasty = sched.build_register_command(
+        r"C:\o'brien\pythonw.exe", "queue run", r"C:\o'brien", 15, "It's Mine")
+    check("escapes apostrophes in paths", "'C:\\o''brien\\pythonw.exe'" in nasty)
+    check("escapes apostrophes in the task name", "'It''s Mine'" in nasty)
+
+    try:
+        sched.build_register_command("x", "y", "z", every=0)
+        check("rejects a zero interval", False)
+    except sched.SchedulerError:
+        check("rejects a zero interval", True)
+
+    check("status command tolerates a missing task",
+          "-ErrorAction SilentlyContinue" in sched.build_status_command())
+    check("unregister does not prompt",
+          "-Confirm:$false" in sched.build_unregister_command())
+
+    parsed = sched.parse_status(
+        '{"registered":true,"state":"Ready","lastRun":"9/8/2026 8:00:00 PM",'
+        '"lastResult":0,"nextRun":"9/8/2026 8:15:00 PM","interval":"PT15M"}')
+    check("parses a registered task",
+          parsed["registered"] and parsed["interval"] == "PT15M")
+    check("parses the last result", parsed["last_result"] == 0)
+    check("parses an absent task",
+          sched.parse_status('{"registered":false}')["registered"] is False)
+    for junk in ("", "   ", "not json", "null", "[]", "Get-ScheduledTask : error"):
+        check("treats %r as no task" % junk[:20],
+              sched.parse_status(junk)["registered"] is False)
+
+    check("describes minutes", sched.describe_interval("PT15M") == "every 15 minutes")
+    check("singular minute", sched.describe_interval("PT1M") == "every 1 minute")
+    check("describes hours", sched.describe_interval("PT2H") == "every 2 hours")
+    check("falls back on an odd interval",
+          sched.describe_interval("P1DT3H") == "P1DT3H")
+    check("handles an empty interval",
+          sched.describe_interval("") == "on a schedule")
+
+    executable, arguments, workdir = sched.runner_command()
+    check("runner points at a real executable", Path(executable).exists(), executable)
+    check("runner asks for `queue run`", arguments.endswith("queue run"), arguments)
+    check("runner has a working directory", Path(workdir).is_dir(), workdir)
 
     server.shutdown()
     print("\n%s" % ("All checks passed." if not FAILURES[0]

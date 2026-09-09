@@ -146,6 +146,37 @@ def main():
     check("write-only explains the missing username",
           "write-only" in bar.detail.text(), bar.detail.text())
 
+    print("\n  background runner row")
+    from pfpost import scheduler as sched
+    panel = window.queue_panel
+
+    panel.runner_state({"registered": False})
+    check("off state warns that nothing will publish",
+          "will not publish" in panel.runner_label.text(), panel.runner_label.text())
+    check("off state is highlighted", "e67e22" in panel.runner_label.styleSheet())
+    check("off state offers Enable",
+          panel.runner_button.text() == "Enable background posting")
+    check("off state tracked", panel.runner_registered is False)
+
+    panel.runner_state({"registered": True, "interval": "PT15M", "state": "Ready",
+                        "last_result": 0})
+    check("on state names the interval",
+          "every 15 minutes" in panel.runner_label.text(), panel.runner_label.text())
+    check("on state is not highlighted", panel.runner_label.styleSheet() == "")
+    check("on state offers Disable",
+          panel.runner_button.text() == "Disable background posting")
+
+    # 267011 is SCHED_S_TASK_HAS_NOT_RUN - normal for a freshly created task.
+    panel.runner_state({"registered": True, "interval": "PT15M", "last_result": 267011})
+    check("a never-run task is not reported as failing",
+          "reported code" not in panel.runner_label.text(), panel.runner_label.text())
+    panel.runner_state({"registered": True, "interval": "PT15M", "last_result": 1})
+    check("a real failure code is surfaced",
+          "reported code 1" in panel.runner_label.text(), panel.runner_label.text())
+
+    check("nudge fires once per session, not every queue",
+          window._runner_nudged is False)
+
     print("\n  posted dialog")
     from pfpost.gui import PostedDialog
 

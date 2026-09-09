@@ -214,16 +214,28 @@ Publish everything due:
 python pfpost.py queue run
 ```
 
-To automate that, print the registration commands and paste them into
-PowerShell:
+**A queued post publishes only when something runs the queue.** In the desktop
+app, the row under the queue table says whether background posting is on and
+turns it on for you; queue something with it off and pfpost offers to enable it
+rather than letting the post sit there silently.
+
+From the command line:
 
 ```
-python pfpost.py schedule --every 15
+python pfpost.py schedule --install
+python pfpost.py schedule --status
+python pfpost.py schedule --remove
 ```
 
-`-StartWhenAvailable` is the important flag — it makes the task catch up after
-sleep or a reboot instead of silently skipping a missed window. `pythonw.exe` is
-used so nothing flashes a console window every 15 minutes.
+`--install` registers a Windows scheduled task that runs `queue run` every 15
+minutes (`--every` to change it) under `pythonw.exe`, so no console window
+appears. Plain `pfpost schedule` prints the PowerShell instead of running it, if
+you would rather see what it does first.
+
+Two details that matter: `-StartWhenAvailable` makes the task catch up after
+sleep or a reboot instead of skipping a missed window, and an explicit
+`-RepetitionDuration` keeps it repeating — without one the trigger gets an empty
+duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
 
 ## Behaviour worth knowing
 
