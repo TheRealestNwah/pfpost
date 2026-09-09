@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-USER_AGENT = "pfpost/2.0"
+USER_AGENT = "pfpost/1.0"
 DEFAULT_SCOPES = "read write"
 NARROW_SCOPES = "write"
 REFRESH_MARGIN = timedelta(days=7)
