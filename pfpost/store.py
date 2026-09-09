@@ -60,6 +60,24 @@ def queue_path() -> Path:
     return config_dir() / "queue.json"
 
 
+def draft_path() -> Path:
+    return config_dir() / "draft.json"
+
+
+def staged_dir(item_id: str | None = None) -> Path:
+    """Where queued images are copied to.
+
+    A queued post may sit for days. Referencing the user's original file means
+    it can be moved, renamed, edited or deleted in the meantime - and a
+    same-path-different-content edit would post the wrong image with no error
+    at all. Copying at queue time closes that window.
+    """
+    base = config_dir() / "staged"
+    path = base / item_id if item_id else base
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def backend_name() -> str:
     if _HAS_KEYRING:
         return "keyring"
@@ -216,3 +234,47 @@ def save_queue(queue: dict) -> None:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(queue, indent=2), encoding="utf-8")
     tmp.replace(p)
+
+
+def discard_staged(item_id: str) -> None:
+    """Delete one item's staged copies. Never raises - this is cleanup."""
+    import shutil
+    try:
+        shutil.rmtree(staged_dir(item_id), ignore_errors=True)
+    except OSError:
+        pass
+
+
+def staged_bytes() -> int:
+    total = 0
+    for path in staged_dir().rglob("*"):
+        if path.is_file():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def load_draft() -> dict:
+    p = draft_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_draft(draft: dict) -> None:
+    p = draft_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(draft, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def clear_draft() -> None:
+    try:
+        draft_path().unlink(missing_ok=True)
+    except OSError:
+        pass

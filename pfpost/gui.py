@@ -440,6 +440,7 @@ class Composer(QWidget):
         self.table.setRowCount(0)
         self.caption.setPlainText("")
         self.update_counter()
+        store.clear_draft()      # the work left the composer; nothing to restore
 
     # -- state ------------------------------------------------------------
 
@@ -478,7 +479,75 @@ class Composer(QWidget):
         except api.ValidationError as exc:
             QMessageBox.warning(self, "pfpost", str(exc))
             return None
+        if not self.confirm_alt_text(images):
+            return None
         return images
+
+    def confirm_alt_text(self, images) -> bool:
+        """Alt text cannot be added after posting, so ask before, not never."""
+        missing = [path.name for path, alt in images if not (alt or "").strip()]
+        if not missing:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("No alt text")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("%d image%s ha%s no alt text."
+                    % (len(missing), "" if len(missing) == 1 else "s",
+                       "s" if len(missing) == 1 else "ve"))
+        box.setInformativeText(
+            "Alt text describes the image for people using screen readers, and "
+            "Pixelfed cannot add it after posting.\n\n%s"
+            % ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else ""))
+        add = box.addButton("Add alt text", QMessageBox.RejectRole)
+        box.addButton("Post without it", QMessageBox.AcceptRole)
+        box.setDefaultButton(add)
+        box.exec()
+        if box.clickedButton() is add:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 2)
+                if item and not item.text().strip():
+                    self.table.setCurrentItem(item)
+                    self.table.editItem(item)
+                    break
+            return False
+        return True
+
+    # -- drafts -----------------------------------------------------------
+
+    def draft(self) -> dict:
+        return {
+            "caption": self.caption.toPlainText(),
+            "visibility": self.visibility.currentText(),
+            "images": [{"path": str(path), "alt": alt} for path, alt in self.images()],
+        }
+
+    def save_draft(self):
+        data = self.draft()
+        if not data["images"] and not data["caption"].strip():
+            store.clear_draft()
+            return
+        store.save_draft(data)
+
+    def restore_draft(self) -> int:
+        """Put back whatever was staged when the window last closed."""
+        data = store.load_draft()
+        if not data:
+            return 0
+        restored = 0
+        for entry in data.get("images", []):
+            path = Path(entry.get("path", ""))
+            if not path.exists():
+                continue          # deleted since; silently skip rather than error
+            self.add_paths([path])
+            row = self.table.rowCount() - 1
+            self.table.item(row, 2).setText(entry.get("alt") or "")
+            restored += 1
+        self.caption.setPlainText(data.get("caption") or "")
+        index = self.visibility.findText(data.get("visibility") or "public")
+        if index >= 0:
+            self.visibility.setCurrentIndex(index)
+        self.update_counter()
+        return restored
 
     # -- actions ----------------------------------------------------------
 
@@ -795,6 +864,16 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Ready")
         self.refresh_account()
+
+        pfqueue.prune_staged()      # tidy copies orphaned by an interrupted removal
+        restored = self.composer.restore_draft()
+        if restored or self.composer.caption.toPlainText().strip():
+            self.say("Restored your unsent draft (%d image%s)."
+                     % (restored, "" if restored == 1 else "s"))
+
+    def closeEvent(self, event):
+        self.composer.save_draft()
+        super().closeEvent(event)
 
     def say(self, message: str):
         self.statusBar().showMessage(message, 12000)

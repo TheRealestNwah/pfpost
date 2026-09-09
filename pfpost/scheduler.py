@@ -47,7 +47,11 @@ def runner_command() -> tuple[str, str, str]:
     """
     if getattr(sys, "frozen", False):
         exe = Path(sys.executable).resolve()
-        return str(exe), "queue run", str(exe.parent)
+        # Prefer the windowed build for the scheduled task: the console build
+        # flashes a terminal every interval when the user is logged in.
+        windowed = exe.with_name("pfpost-gui.exe")
+        runner = windowed if windowed.exists() else exe
+        return str(runner), "queue run", str(exe.parent)
 
     root = Path(__file__).resolve().parent.parent
     launcher = root / "pfpost.py"

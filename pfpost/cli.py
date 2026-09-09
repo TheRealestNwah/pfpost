@@ -177,6 +177,12 @@ def cmd_post(args):
               % (len(args.caption or ""), args.visibility))
         return
 
+    missing_alt = [p.name for p, alt in images if not (alt or "").strip()]
+    if missing_alt:
+        # Not a prompt: scripts and scheduled runs must not block on stdin.
+        print("Note: no alt text for %s. Pixelfed cannot add it after posting."
+              % ", ".join(missing_alt), file=sys.stderr)
+
     def progress(index, total, name):
         print("[%d/%d] uploading %s ..." % (index, total, name), flush=True)
 

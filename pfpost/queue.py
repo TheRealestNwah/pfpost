@@ -6,6 +6,7 @@ POST /api/v1/statuses - so "scheduled" posts are a local queue plus a clock.
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -59,17 +60,37 @@ def local_str(iso: str) -> str:
 
 
 def add(images, caption: str, visibility: str, when: datetime) -> dict:
-    queue = store.load_queue()
+    """Queue a post, copying its images somewhere they cannot move or change.
+
+    The originals stay where they are; `original` is kept only so the UI can
+    show a familiar name.
+    """
+    item_id = uuid.uuid4().hex[:8]
+    staged = []
+    for index, (path, alt) in enumerate(images):
+        source = Path(path)
+        if not source.exists():
+            store.discard_staged(item_id)
+            raise QueueError("File not found: %s" % source)
+        target = store.staged_dir(item_id) / ("%02d_%s" % (index, source.name))
+        try:
+            shutil.copy2(source, target)
+        except OSError as exc:
+            store.discard_staged(item_id)
+            raise QueueError("Could not stage %s: %s" % (source.name, exc))
+        staged.append({"path": str(target), "alt": alt, "original": str(source)})
+
     item = {
-        "id": uuid.uuid4().hex[:8],
+        "id": item_id,
         "created": datetime.now(timezone.utc).isoformat(),
         "post_at": when.astimezone(timezone.utc).isoformat(),
         "caption": caption,
         "visibility": visibility,
-        "images": [{"path": str(p), "alt": a} for p, a in images],
+        "images": staged,
         "status": "pending",
         "attempts": 0,
     }
+    queue = store.load_queue()
     queue["items"].append(item)
     store.save_queue(queue)
     return item
@@ -89,6 +110,7 @@ def remove(item_id: str) -> None:
         raise QueueError("No queue item with id %s" % item_id)
     queue["items"] = remaining
     store.save_queue(queue)
+    store.discard_staged(item_id)
 
 
 def remove_many(item_ids) -> int:
@@ -101,6 +123,8 @@ def remove_many(item_ids) -> int:
     removed = len(queue["items"]) - len(remaining)
     queue["items"] = remaining
     store.save_queue(queue)
+    for item_id in wanted:
+        store.discard_staged(item_id)
     return removed
 
 
@@ -114,10 +138,27 @@ def clear(statuses=("posted",)) -> int:
     if "pending" in wanted:
         raise QueueError("clear() will not drop pending posts; use remove().")
     queue = store.load_queue()
-    remaining = [i for i in queue["items"] if i["status"] not in wanted]
-    removed = len(queue["items"]) - len(remaining)
-    queue["items"] = remaining
+    dropped = [i["id"] for i in queue["items"] if i["status"] in wanted]
+    queue["items"] = [i for i in queue["items"] if i["status"] not in wanted]
     store.save_queue(queue)
+    for item_id in dropped:
+        store.discard_staged(item_id)
+    return len(dropped)
+
+
+def prune_staged() -> int:
+    """Delete staged copies with no queue item left. Returns how many folders.
+
+    Staged files are the only thing here that grows without bound, so an
+    interrupted removal must not leak a copy of every photo forever.
+    """
+    known = {i["id"] for i in store.load_queue()["items"]}
+    removed = 0
+    base = store.staged_dir()
+    for folder in base.iterdir() if base.exists() else []:
+        if folder.is_dir() and folder.name not in known:
+            store.discard_staged(folder.name)
+            removed += 1
     return removed
 
 
@@ -195,6 +236,8 @@ def run(session, limit: int = 0, on_event=None) -> list[dict]:
             live["status"] = "posted"
             live["result_url"] = result.get("url")
             live["posted_at"] = datetime.now(timezone.utc).isoformat()
+            # The copies existed to survive until publication; that is done.
+            store.discard_staged(live["id"])
             emit("posted", live, live.get("result_url") or "")
         except (api.ApiError, api.ValidationError) as exc:
             live["error"] = str(exc)[:400]

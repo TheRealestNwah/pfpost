@@ -1,10 +1,10 @@
-__pycache__/
+*.egg-info/
 *.py[cod]
+*.spec
+.idea/
 .venv/
-venv/
+.vscode/
+__pycache__/
 build/
 dist/
-*.spec
-*.egg-info/
-.vscode/
-.idea/
+venv/

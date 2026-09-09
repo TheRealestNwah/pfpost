@@ -271,13 +271,70 @@ def main():
     check("future item still pending",
           [i["id"] for i in pfqueue.items()] == [later["id"]])
 
-    print("\n8. failure handling")
-    pfqueue.add([(tmp / "gone.png", None)], "orphan", "public", now - timedelta(minutes=1))
+    print("\n8. staging and failure handling")
+    try:
+        pfqueue.add([(tmp / "gone.png", None)], "orphan", "public",
+                    now - timedelta(minutes=1))
+        check("queueing a missing file is refused up front", False)
+    except pfqueue.QueueError:
+        check("queueing a missing file is refused up front", True)
+
+    # The point of staging: what happens to the user's original afterwards
+    # stops mattering. Previously this scenario failed the post.
+    store.save_queue({"items": []})
+    movable = tmp / "movable.png"
+    movable.write_bytes(PNG)
+    staged_item = pfqueue.add([(movable, "alt")], "staged", "public",
+                              now - timedelta(minutes=1))
+    check("images are copied out of the original location",
+          Path(staged_item["images"][0]["path"]) != movable
+          and Path(staged_item["images"][0]["path"]).exists())
+    check("the original path is remembered for display",
+          staged_item["images"][0]["original"] == str(movable))
+
+    movable.unlink()                       # user deletes or moves the original
+    check("the staged copy survives the original being deleted",
+          Path(staged_item["images"][0]["path"]).exists())
+
+    RECEIVED.clear()
+    MEDIA_COUNTER[0] = 0
+    processed = pfqueue.run(session)
+    check("a post still publishes after its original is gone",
+          processed and processed[0]["status"] == "posted",
+          processed[0]["status"] if processed else "not run")
+    check("staged copies are cleaned up once posted",
+          not (store.staged_dir() / staged_item["id"]).exists()
+          or not any((store.staged_dir() / staged_item["id"]).iterdir()))
+
+    # A staged copy can still be lost to disk cleanup or a wiped profile.
+    store.save_queue({"items": []})
+    doomed = tmp / "doomed.png"
+    doomed.write_bytes(PNG)
+    item = pfqueue.add([(doomed, None)], "orphan", "public",
+                       now - timedelta(minutes=1))
+    Path(item["images"][0]["path"]).unlink()
     processed = pfqueue.run(session)
     orphan = [i for i in processed if i["caption"] == "orphan"]
-    check("vanished file fails without uploading",
+    check("a missing staged copy fails without uploading",
           orphan and orphan[0]["status"] == "failed"
           and "missing files" in orphan[0]["error"])
+
+    store.save_queue({"items": []})
+    leaked = store.staged_dir("deadbeef")
+    (leaked / "x.png").write_bytes(PNG)
+    # Count first: earlier sections leave their own folders behind, so a bare
+    # `== 1` would be asserting the test's history, not prune_staged's job.
+    orphans = sum(1 for d in store.staged_dir().iterdir() if d.is_dir())
+    check("prune_staged reclaims every orphaned copy",
+          pfqueue.prune_staged() == orphans, "expected %d" % orphans)
+    check("pruning leaves nothing behind", not leaked.exists())
+
+    kept = pfqueue.add([(img_a, None)], "keep me", "public",
+                       now + timedelta(days=1))
+    check("pruning spares copies a queue item still needs",
+          pfqueue.prune_staged() == 0
+          and Path(kept["images"][0]["path"]).exists())
+    store.save_queue({"items": []})
 
     HEADER_LIMIT[0] = 10
     try:

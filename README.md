@@ -25,8 +25,21 @@ media attachment — text-only posts are rejected.
 
 ## Install
 
+Prebuilt Windows executables need no Python at all:
+
+| | |
+|---|---|
+| `pfpost-gui.exe` | the desktop app |
+| `pfpost.exe` | the command line, and what the scheduled task runs |
+
+Keep both in the same folder — enabling background posting looks for its sibling
+so the task runs without flashing a console window.
+
+To build them yourself, or to run from source:
+
 ```
 pip install -r requirements.txt
+python build.py
 ```
 
 `keyring` is strongly recommended — without it pfpost falls back to Windows
@@ -249,11 +262,23 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
 
 ## Behaviour worth knowing
 
-- **Retries.** A failed queue item is retried on the next run, up to three
-  attempts, then marked `failed` with the error preserved. Never silently
-  dropped.
-- **Missing files.** If an image has moved or been deleted by the time the item
-  comes due, it is marked `failed` immediately and nothing is uploaded.
+- **Queued images are copied, not referenced.** A post scheduled for next week
+  keeps its own copy under `%APPDATA%\PixelfedPoster\staged\`, so moving,
+  renaming, editing or deleting your original changes nothing. Without this, a
+  same-path-different-content edit would post the wrong image with no error at
+  all. Copies are deleted when the post goes out or the item is removed, and
+  orphans are swept on launch.
+- **Missing alt text is flagged before posting**, not after — Pixelfed cannot
+  add it later. The desktop app offers to jump to the empty field; the CLI
+  prints a note to stderr rather than blocking, so scripts and scheduled runs
+  are unaffected.
+- **An unsent composer is restored.** Close the window with images staged and a
+  caption written, and it comes back next launch. Images deleted in the
+  meantime are skipped rather than failing the restore.
+- **Failed posts back off** 2, then 10, then 30 minutes before retrying, up to
+  three attempts. Validation failures do not retry — a rejected payload will be
+  rejected identically next time.
+
 - **Token refresh.** Tokens last a year. `pfpost` refreshes automatically once
   fewer than 7 days remain. Watch for the header-size issue above if it ever
   starts failing after a refresh.
@@ -262,9 +287,9 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
 - **Logging out is local.** Pixelfed has no revocation endpoint; revoke on the
   instance under Settings > Applications if you need the token dead server-side.
 - **Alt text** is sent as `description` on the media upload, not on the status.
-- **State** lives in `%APPDATA%\PixelfedPoster\` — `state.json` for credentials,
-  `queue.json` for pending posts. Queued items reference images by path, so
-  don't move a file between queueing and posting.
+- **State** lives in `%APPDATA%\PixelfedPoster\`: `state.json` for settings,
+  `queue.json` for pending posts, `draft.json` for the unsent composer, and
+  `staged\` for queued images.
 
 ## Troubleshooting
 

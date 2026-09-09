@@ -177,6 +177,55 @@ def main():
     check("nudge fires once per session, not every queue",
           window._runner_nudged is False)
 
+    print("\n  alt text and drafts")
+    from pfpost import store as pfstore
+
+    composer.add_paths([a, b])
+    composer.table.item(0, 2).setText("described")
+    composer.table.item(1, 2).setText("")
+    check("spots images with no alt text",
+          [p.name for p, alt in composer.images() if not (alt or "").strip()]
+          == ["b.png"])
+    check("passes when every image is described",
+          composer.confirm_alt_text([(a, "one"), (b, "two")]) is True)
+    check("whitespace does not count as alt text",
+          [alt for _p, alt in [(a, "   ")] if not (alt or "").strip()] == ["   "])
+
+    composer.caption.setPlainText("draft caption")
+    saved = composer.draft()
+    check("draft captures the caption", saved["caption"] == "draft caption")
+    check("draft captures images and alts",
+          [i["alt"] for i in saved["images"]] == ["described", None])
+    check("draft captures visibility", saved["visibility"] in ("public", "unlisted",
+                                                              "private"))
+
+    composer.save_draft()
+    check("draft is written to disk", pfstore.draft_path().exists())
+
+    composer.table.setRowCount(0)
+    composer.caption.setPlainText("")
+    restored = composer.restore_draft()
+    check("draft restores both images", restored == 2, str(restored))
+    check("draft restores the caption",
+          composer.caption.toPlainText() == "draft caption")
+    check("draft restores alt text",
+          composer.images()[0][1] == "described")
+
+    # An image deleted between sessions must not block the rest of the draft.
+    ghost = tmp / "ghost.png"
+    ghost.write_bytes(PNG)
+    composer.add_paths([ghost])
+    composer.save_draft()
+    ghost.unlink()
+    composer.table.setRowCount(0)
+    restored = composer.restore_draft()
+    check("a deleted image is skipped, not fatal", restored == 2, str(restored))
+
+    composer.clear()
+    check("clearing the composer clears the draft",
+          not pfstore.draft_path().exists())
+    check("restoring nothing is harmless", composer.restore_draft() == 0)
+
     print("\n  queue housekeeping")
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     from pfpost import queue as pfq
