@@ -256,8 +256,12 @@ def cmd_schedule(args):
     print("Paste into PowerShell - no administrator rights needed:\n")
     print("$action = New-ScheduledTaskAction -Execute '%s' -Argument '\"%s\" queue run'"
           % (runner, script))
+    # -RepetitionDuration is not optional in practice: without it the trigger
+    # gets an empty Duration alongside StopAtDurationEnd=True, which is the
+    # documented cause of a repeating task quietly stopping after a day.
     print("$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) "
-          "-RepetitionInterval (New-TimeSpan -Minutes %d)" % every)
+          "-RepetitionInterval (New-TimeSpan -Minutes %d) "
+          "-RepetitionDuration (New-TimeSpan -Days 3650)" % every)
     print("$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable "
           "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries")
     print("Register-ScheduledTask -TaskName '%s' -Action $action -Trigger $trigger "

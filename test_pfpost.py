@@ -322,6 +322,26 @@ def main():
     check("unreadable credential reports disconnected, not a crash",
           broken.status()["connected"] is False)
 
+    print("\n10. schedule command output")
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+    from pfpost import cli
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        cli.cmd_schedule(argparse.Namespace(every=15, name="Pixelfed Poster"))
+    text = buffer.getvalue()
+
+    check("names the interval", "-Minutes 15" in text)
+    # Without an explicit duration the trigger gets an empty Duration and
+    # StopAtDurationEnd=True, and repetition can stop after a day.
+    check("sets an explicit repetition duration",
+          "-RepetitionDuration" in text, "repetition would expire")
+    check("survives sleep and reboot", "-StartWhenAvailable" in text)
+    check("quotes the script path for spaces", '\\"' in text or '"' in text)
+    check("offers a removal command", "Unregister-ScheduledTask" in text)
+
     server.shutdown()
     print("\n%s" % ("All checks passed." if not FAILURES[0]
                     else "%d CHECK(S) FAILED." % FAILURES[0]))
