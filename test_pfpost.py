@@ -410,6 +410,24 @@ def main():
           pfqueue.RETRY_BACKOFF_SECONDS[0] > 60)
     pfqueue.remove(overdue["id"])
 
+    print("\n9c. frozen launcher argument defaults")
+    # Double-clicking pfpost-gui.exe passes no arguments. Reaching argparse
+    # there means "a subcommand is required" printed to a console that does not
+    # exist, and the program appears to do nothing at all.
+    launcher = Path(__file__).resolve().parent / "pfpost.py"
+    source = launcher.read_text(encoding="utf-8")
+    check("the GUI build is identified by filename, not by stdout",
+          'stem.lower().endswith("-gui")' in source
+          and "GUI_BUILD = FROZEN" in source)
+    check("no arguments means the GUI on that build",
+          'argv = ["gui"] if GUI_BUILD and len(sys.argv) == 1 else None' in source)
+    check("startup failures are surfaced, not swallowed",
+          "def report_crash" in source and "QMessageBox" in source)
+    check("SystemExit is left alone so exit codes survive",
+          "except SystemExit:" in source)
+    check("missing streams get somewhere to write",
+          "os.devnull" in source)
+
     print("\n10. schedule command output")
     import io
     from contextlib import redirect_stdout
