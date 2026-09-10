@@ -182,6 +182,7 @@ def cmd_post(args):
         # Not a prompt: scripts and scheduled runs must not block on stdin.
         print("Note: no alt text for %s. Pixelfed cannot add it after posting."
               % ", ".join(missing_alt), file=sys.stderr)
+    note_links(args.caption, args.visibility)
 
     def progress(index, total, name):
         print("[%d/%d] uploading %s ..." % (index, total, name), flush=True)
@@ -204,6 +205,17 @@ def cmd_queue_add(args):
     print("Queued %s for %s (%d image%s)."
           % (item["id"], pfqueue.local_str(item["post_at"]), len(images),
              "" if len(images) == 1 else "s"))
+    note_links(args.caption, args.visibility)
+
+
+def note_links(caption, visibility):
+    """Stderr, never a prompt - same reasoning as the alt-text note."""
+    triggers = api.link_triggers(caption or "", visibility)
+    if triggers and store.load_prefs()["warn_links"]:
+        print("Note: the caption contains a link (%s). Pixelfed's spam filter "
+              "makes such posts unlisted on accounts under six months old or "
+              "with 100 followers or fewer." % ", ".join(triggers[:3]),
+              file=sys.stderr)
 
 
 def cmd_queue_list(args):

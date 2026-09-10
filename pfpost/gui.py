@@ -15,7 +15,7 @@ from PySide6.QtCore import (QDateTime, QEvent, QSize, Qt, QThread, QTimer,
 from PySide6.QtGui import (QAction, QColor, QDesktopServices, QIcon,
                            QPalette, QPixmap)
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDateTimeEdit, QDialog,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar,
@@ -32,6 +32,19 @@ THUMB = 56
 AUTO_RUN_MS = 60_000
 IMAGE_FILTER = ("Media (*.png *.jpg *.jpeg *.gif *.webp *.avif *.heic *.mp4 *.mov);;"
                 "All files (*)")
+
+
+def mark_accent(button):
+    """Give a button the accent style, even one that is already polished.
+
+    Property selectors are resolved when a widget is first polished, and
+    QMessageBox.addButton() polishes the button before returning it - so a
+    plain setProperty() afterwards is silently ignored.
+    """
+    button.setProperty("accent", True)
+    button.style().unpolish(button)
+    button.style().polish(button)
+    return button
 
 
 class Worker(QThread):
@@ -479,6 +492,9 @@ class Composer(QWidget):
             return None
         if not self.confirm_alt_text(images):
             return None
+        if not self.confirm_links(self.caption.toPlainText(),
+                                  self.visibility.currentText()):
+            return None
         return images
 
     def confirm_alt_text(self, images) -> bool:
@@ -497,6 +513,7 @@ class Composer(QWidget):
             "Pixelfed cannot add it after posting.\n\n%s"
             % ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else ""))
         add = box.addButton("Add alt text", QMessageBox.RejectRole)
+        mark_accent(add)
         box.addButton("Post without it", QMessageBox.AcceptRole)
         box.setDefaultButton(add)
         box.exec()
@@ -507,6 +524,45 @@ class Composer(QWidget):
                     self.table.setCurrentItem(item)
                     self.table.editItem(item)
                     break
+            return False
+        return True
+
+    def confirm_links(self, caption: str, visibility: str) -> bool:
+        """Warn that Pixelfed may quietly make a public post with a link unlisted.
+
+        The post still succeeds and the server's reply still says public - the
+        change happens afterwards - so without this the first sign is finding
+        the post missing from your profile.
+        """
+        triggers = api.link_triggers(caption, visibility)
+        if not triggers or not store.load_prefs()["warn_links"]:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("Link in a public post")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("Pixelfed may make this post unlisted.")
+        box.setInformativeText(
+            "Its spam filter changes public posts that contain links to "
+            "unlisted when the account is under six months old or has 100 "
+            "followers or fewer. The post still goes up, and you can appeal "
+            "from the website.\n\nFound: %s"
+            % ", ".join(triggers[:3]) + (" ..." if len(triggers) > 3 else ""))
+        edit = box.addButton("Edit caption", QMessageBox.RejectRole)
+        mark_accent(edit)
+        box.addButton("Keep the link", QMessageBox.AcceptRole)
+        box.setDefaultButton(edit)
+        mute = QCheckBox("Don't warn me about links again")
+        box.setCheckBox(mute)
+        box.exec()
+        if mute.isChecked():
+            store.set_pref("warn_links", False)
+        if box.clickedButton() is edit:
+            # Select the first offending word so it can be deleted in one key.
+            cursor = self.caption.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            self.caption.setTextCursor(cursor)
+            self.caption.find(triggers[0])
+            self.caption.setFocus()
             return False
         return True
 
@@ -866,6 +922,16 @@ class MainWindow(QMainWindow):
         menu.addAction(self.connect_action)
         menu.addAction(self.disconnect_action)
 
+        # Also the way back after ticking "don't warn me again" in the dialog.
+        self.warn_links_action = QAction("Warn about links in public posts", self)
+        self.warn_links_action.setCheckable(True)
+        self.warn_links_action.toggled.connect(
+            lambda on: store.set_pref("warn_links", on))
+        options = self.menuBar().addMenu("Options")
+        options.addAction(self.warn_links_action)
+        options.aboutToShow.connect(self.sync_options)
+        self.sync_options()
+
         self.statusBar().showMessage("Ready")
         self.refresh_account()
 
@@ -878,6 +944,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.composer.save_draft()
         super().closeEvent(event)
+
+    def sync_options(self):
+        """Read prefs from disk - the warning dialog can change them too."""
+        self.warn_links_action.blockSignals(True)
+        self.warn_links_action.setChecked(store.load_prefs()["warn_links"])
+        self.warn_links_action.blockSignals(False)
 
     def say(self, message: str):
         self.statusBar().showMessage(message, 12000)
@@ -984,6 +1056,10 @@ class MainWindow(QMainWindow):
 def apply_theme(app) -> dict:
     """Paint the application in Pixelfed's palette and return the tokens."""
     tokens = theme.tokens(theme.is_dark(app))
+    try:
+        tokens["check_image"] = theme.check_image(tokens["primary_text"])
+    except OSError:
+        pass                    # no temp dir: a filled box still reads as ticked
     app.setStyleSheet(theme.stylesheet(tokens))
     return tokens
 

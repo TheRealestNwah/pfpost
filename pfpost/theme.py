@@ -175,6 +175,25 @@ QScrollBar::handle:hover { background: %(muted)s; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
+/* Styled in full because windows11 draws no box at all for an unchecked
+   indicator under this stylesheet. Styling ::indicator also drops the native
+   tick, hence the generated image. The border is `muted`, not a border token:
+   it is the control's only outline, so it needs 3:1 against the ground. */
+QCheckBox { background: transparent; spacing: 8px; }
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border: 1px solid %(muted)s;
+    border-radius: 4px;
+    background: %(surface)s;
+}
+QCheckBox::indicator:hover { border-color: %(primary)s; }
+QCheckBox::indicator:checked {
+    background: %(primary)s;
+    border-color: %(primary)s;
+    image: url("%(check_image)s");
+}
+QCheckBox::indicator:disabled { background: %(bg)s; border-color: %(border)s; }
+
 QSplitter::handle { background: %(border)s; height: 1px; }
 QToolTip {
     background: %(surface)s; color: %(text)s;
@@ -184,7 +203,41 @@ QToolTip {
 #accountBar { background: %(surface)s; border-bottom: 1px solid %(border)s; }
 #sectionLabel { color: %(muted)s; font-weight: 600; }
 #dropHint { color: %(muted)s; }
-""" % t
+""" % dict(t, check_image=t.get("check_image", ""))
+
+
+def check_image(color: str) -> str:
+    """Write the checkbox tick as a PNG and return a stylesheet-ready path.
+
+    Qt stylesheets can only load images from files or compiled resources - not
+    data URIs - so it is drawn once into the temp directory. PNG rather than
+    SVG: SVG needs an image plugin a frozen build could lack, and a missing
+    tick would make a ticked box look unticked.
+    """
+    import tempfile
+    from pathlib import Path
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
+
+    path = Path(tempfile.gettempdir()) / ("pfpost-check-%s.png" % color.lstrip("#"))
+    if not path.exists():
+        size = 64                   # drawn large; Qt scales it to the 16px box
+        image = QImage(size, size, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(color))
+        pen.setWidthF(size * 0.14)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        tick = QPainterPath(QPointF(size * 0.22, size * 0.52))
+        tick.lineTo(QPointF(size * 0.42, size * 0.72))
+        tick.lineTo(QPointF(size * 0.78, size * 0.30))
+        painter.drawPath(tick)
+        painter.end()
+        image.save(str(path), "PNG")
+    return path.as_posix()
 
 
 def is_dark(app) -> bool:

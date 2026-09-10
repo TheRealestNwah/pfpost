@@ -297,6 +297,14 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
   add it later. The desktop app offers to jump to the empty field; the CLI
   prints a note to stderr rather than blocking, so scripts and scheduled runs
   are unaffected.
+- **Links in public captions are flagged too.** Pixelfed's spam filter
+  (`Bouncer`) turns a public post unlisted, after it has been accepted, when the
+  caption contains `https://`, `www.`, `.com`, `.net`, `.org` and similar, on
+  accounts under six months old or with 100 followers or fewer. The post
+  succeeds and the API reply still says public, so the first sign is usually
+  noticing it missing from your profile. pfpost can't see your account age or
+  follower count with a write-only token, so it warns on the caption alone.
+  Turn it off with the checkbox in the warning or under **Options**.
 - **An unsent composer is restored.** Close the window with images staged and a
   caption written, and it comes back next launch. Images deleted in the
   meantime are skipped rather than failing the restore.
@@ -313,8 +321,8 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
   instance under Settings > Applications if you need the token dead server-side.
 - **Alt text** is sent as `description` on the media upload, not on the status.
 - **State** lives in `%APPDATA%\PixelfedPoster\`: `state.json` for settings,
-  `queue.json` for pending posts, `draft.json` for the unsent composer, and
-  `staged\` for queued images.
+  `queue.json` for pending posts, `draft.json` for the unsent composer,
+  `prefs.json` for options, and `staged\` for queued images.
 
 ## Troubleshooting
 
@@ -324,6 +332,7 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
 | `invalid_client` at `/oauth/token` | Client secret isn't valid. Re-run `register` rather than using the Developers page. |
 | `403` on posting | Token lacks `write`. Re-run `register` then `auth`. |
 | `401` | Token revoked — re-run `auth`. |
+| Posted as public, shows as unlisted | Pixelfed's spam filter, not pfpost — the caption had a link. Appeal from the notice on the website; an upheld appeal exempts the account from then on. |
 | `429` | Rate limited; `/oauth/token` is capped at 10 requests/minute. |
 | Redirect never arrives | Redirect URL on the client must match `http://localhost:8080/callback` exactly. |
 | Port 8080 busy | Another dev server has it. Register with `--port` and re-run `auth`. |
@@ -339,15 +348,17 @@ python test_pfpost.py
 python test_gui.py
 ```
 
-39 checks against a mock Pixelfed on port 47311, exercising the real request
-path: credential storage round-trip, header-limit probing and scope selection,
-app registration, token auto-refresh, validation, multipart encoding,
-`media_ids[]` ordering, queue due-time selection, retry behaviour and
-missing-file handling. The mock can simulate an nginx header cap, so the
-scope-narrowing logic is tested rather than assumed.
+`test_pfpost.py` runs against a mock Pixelfed on port 47311, exercising the
+real request path: credential storage round-trip, header-limit probing and
+scope selection, app registration, token auto-refresh, validation, multipart
+encoding, `media_ids[]` ordering, queue staging, due-time selection, retry
+backoff, missing-file handling and the link warning. The mock can simulate an
+nginx header cap, so the scope-narrowing logic is tested rather than assumed.
 
 `test_gui.py` builds the real widgets on Qt's offscreen platform, so it runs
-headless and in CI. It covers construction and the data path from the image
-table to a post payload - not appearance. It skips cleanly if PySide6 is absent.
+headless and in CI. It covers construction, the data path from the image table
+to a post payload, the pre-post dialogs, palette contrast, and a few rendered
+pixels where a style rule is known to be silently ignorable. It skips cleanly if
+PySide6 is absent.
 
 No network access and no credentials needed for either suite.

@@ -219,6 +219,59 @@ def main():
     except api.ValidationError as exc:
         check("accepts a valid post", False, str(exc))
 
+    print("\n4b. link warning (mirrors Pixelfed's Bouncer)")
+    real = "Posted with pfpost https://github.com/TheRealestNwah/pfpost"
+    check("flags the caption that was actually made unlisted",
+          api.link_triggers(real, "public") == ["https://github.com/TheRealestNwah/pfpost"],
+          str(api.link_triggers(real, "public")))
+    check("ignores a caption with no link",
+          api.link_triggers("Morning fog #landscape @friend", "public") == [])
+    for vis in ("unlisted", "private"):
+        check("silent for %s posts - Bouncer only checks public" % vis,
+              api.link_triggers(real, vis) == [])
+    check("empty caption is fine", api.link_triggers("", "public") == [])
+    for word in ("http://x.io", "hxxps://x", "hxxp://x", "www.x.io",
+                 "example.com", "example.net", "example.org"):
+        check("flags %s" % word, api.link_triggers("see " + word, "public") == [word])
+    check("case-sensitive like Str::contains, so EXAMPLE.COM passes Pixelfed too",
+          api.link_triggers("EXAMPLE.COM", "public") == [])
+    check("an email address trips it, as it does on the server",
+          api.link_triggers("mail me@site.com", "public") == ["me@site.com"])
+    check("marker list matches upstream Bouncer.php",
+          api.LINK_MARKERS == ("https://", "http://", "hxxps://", "hxxp://",
+                               "www.", ".com", ".net", ".org"))
+
+    check("warning is on by default", store.load_prefs()["warn_links"] is True)
+    store.set_pref("warn_links", False)
+    check("preference persists", store.load_prefs()["warn_links"] is False)
+    store.prefs_path().write_text("{not json", encoding="utf-8")
+    check("a corrupt prefs file falls back to defaults",
+          store.load_prefs()["warn_links"] is True)
+    store.prefs_path().write_text('{"warn_links": true, "junk": 1}', encoding="utf-8")
+    check("unknown keys in the file are ignored", "junk" not in store.load_prefs())
+    try:
+        store.set_pref("typo", 1)
+        check("unknown preference names are rejected", False)
+    except KeyError:
+        check("unknown preference names are rejected", True)
+    check("prefs live outside state.json, which Session rewrites whole",
+          store.prefs_path() != store.state_path())
+
+    import contextlib
+    import io
+    from pfpost import cli as pfcli
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        pfcli.note_links(real, "public")
+    check("CLI notes the link on stderr", "github.com" in err.getvalue(), err.getvalue())
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(err):
+        pfcli.note_links(real, "unlisted")
+        store.set_pref("warn_links", False)
+        pfcli.note_links(real, "public")
+    check("CLI stays quiet when unlisted or muted", err.getvalue() == "", err.getvalue())
+    store.set_pref("warn_links", True)
+
     print("\n5. publish flow")
     RECEIVED.clear()
     MEDIA_COUNTER[0] = 0

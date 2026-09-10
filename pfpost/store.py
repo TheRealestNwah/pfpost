@@ -64,6 +64,12 @@ def draft_path() -> Path:
     return config_dir() / "draft.json"
 
 
+def prefs_path() -> Path:
+    # Separate from state.json: Session holds that in memory and rewrites it
+    # whole on every token save, which would drop a key written beside it.
+    return config_dir() / "prefs.json"
+
+
 def staged_dir(item_id: str | None = None) -> Path:
     """Where queued images are copied to.
 
@@ -278,3 +284,29 @@ def clear_draft() -> None:
         draft_path().unlink(missing_ok=True)
     except OSError:
         pass
+
+
+PREF_DEFAULTS = {"warn_links": True}
+
+
+def load_prefs() -> dict:
+    """User preferences, always with every key present."""
+    prefs = dict(PREF_DEFAULTS)
+    try:
+        saved = json.loads(prefs_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return prefs
+    if isinstance(saved, dict):
+        prefs.update({k: v for k, v in saved.items() if k in PREF_DEFAULTS})
+    return prefs
+
+
+def set_pref(key: str, value) -> None:
+    if key not in PREF_DEFAULTS:
+        raise KeyError(key)
+    prefs = load_prefs()
+    prefs[key] = value
+    p = prefs_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+    tmp.replace(p)

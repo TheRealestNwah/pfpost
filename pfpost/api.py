@@ -18,7 +18,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-USER_AGENT = "pfpost/1.0"
+from . import __version__
+
+USER_AGENT = "pfpost/%s" % __version__
 DEFAULT_SCOPES = "read write"
 NARROW_SCOPES = "write"
 REFRESH_MARGIN = timedelta(days=7)
@@ -294,6 +296,28 @@ class Pixelfed:
                 on_progress(index, total, path.name)
             media_ids.append(self.upload_media(path, alt))
         return self.create_status(caption, media_ids, visibility)
+
+
+# Pixelfed's anti-spam check (app/Util/Sentiment/Bouncer.php) quietly turns a
+# public post unlisted when the account is under six months old or has no
+# public posts, has 100 followers or fewer, and the caption contains any of
+# these. Copied verbatim, and matched the way Laravel's Str::contains does -
+# case-sensitive substrings - so the warning fires exactly when Pixelfed would
+# even look. Account age and followers need the `read` scope, which a
+# header-capped instance may not grant, so those two halves are not checked.
+LINK_MARKERS = ("https://", "http://", "hxxps://", "hxxp://",
+                "www.", ".com", ".net", ".org")
+
+
+def link_triggers(caption: str, visibility: str) -> list[str]:
+    """Words in the caption that could get a public post made unlisted.
+
+    Empty for anything but a public post: Pixelfed skips the check otherwise.
+    """
+    if visibility != "public" or not caption:
+        return []
+    return [word for word in caption.split()
+            if any(marker in word for marker in LINK_MARKERS)]
 
 
 class ValidationError(Exception):

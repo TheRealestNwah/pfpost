@@ -235,6 +235,94 @@ def main():
           not pfstore.draft_path().exists())
     check("restoring nothing is harmless", composer.restore_draft() == 0)
 
+    print("\n  link warning")
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+
+    seen = []
+
+    def answering(button_text, fn, mute=False, probe=None):
+        """Run fn, clicking button_text on any message box it opens.
+
+        Always armed, even where no dialog is expected: an unanswered exec()
+        blocks forever, so a regression would hang the suite instead of
+        failing it. Disarmed afterwards so it cannot answer a later box.
+        """
+        seen.clear()
+        armed = [True]
+
+        def go():
+            if not armed[0]:
+                return
+            boxes = [w for w in _QApp.topLevelWidgets()
+                     if isinstance(w, QMessageBox) and w.isVisible()]
+            if not boxes:
+                QTimer.singleShot(10, go)
+                return
+            box = boxes[0]
+            seen.append(box.text())
+            if probe:
+                probe(box)
+            if mute:
+                box.checkBox().setChecked(True)
+            for button in box.buttons():
+                if button.text() == button_text:
+                    button.click()
+                    break
+            else:
+                box.reject()
+            QTimer.singleShot(10, go)       # keep answering until disarmed
+
+        QTimer.singleShot(0, go)
+        try:
+            return fn()
+        finally:
+            armed[0] = False
+
+    link = "Posted with pfpost https://github.com/TheRealestNwah/pfpost"
+    # Capitals: the queue section below reuses `keep` for a queue item.
+    KEEP, EDIT = "Keep the link", "Edit caption"
+    pfstore.set_pref("warn_links", True)
+
+    check("no link: passes without asking",
+          answering(KEEP, lambda: composer.confirm_links("Morning fog", "public"))
+          is True and not seen, str(seen))
+    check("unlisted post with a link: passes without asking",
+          answering(KEEP, lambda: composer.confirm_links(link, "unlisted"))
+          is True and not seen, str(seen))
+
+    composer.caption.setPlainText(link)
+    check("Edit caption holds the post back",
+          answering(EDIT, lambda: composer.confirm_links(link, "public")) is False)
+    check("the warning was actually shown", len(seen) == 1, str(seen))
+    check("Edit caption selects the link so one key deletes it",
+          composer.caption.textCursor().selectedText()
+          == "https://github.com/TheRealestNwah/pfpost",
+          composer.caption.textCursor().selectedText())
+
+    check("Keep the link lets the post through",
+          answering(KEEP, lambda: composer.confirm_links(link, "public")) is True)
+    check("keeping the link without ticking the box keeps warning",
+          pfstore.load_prefs()["warn_links"] is True)
+
+    answering(KEEP, lambda: composer.confirm_links(link, "public"), mute=True)
+    check("the checkbox turns the warning off", pfstore.load_prefs()["warn_links"] is False)
+    check("once muted, no dialog",
+          answering(KEEP, lambda: composer.confirm_links(link, "public"))
+          is True and not seen, str(seen))
+    window.sync_options()
+    check("the Options menu reflects a mute from the dialog",
+          window.warn_links_action.isChecked() is False)
+    window.warn_links_action.setChecked(True)
+    check("the Options menu turns it back on", pfstore.load_prefs()["warn_links"] is True)
+
+    composer.visibility.setCurrentText("public")
+    composer.add_paths([a])
+    composer.table.item(0, 2).setText("alt")
+    check("gather runs the link check",
+          answering(EDIT, composer.gather) is None and len(seen) == 1, str(seen))
+    composer.clear()
+
     print("\n  queue housekeeping")
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     from pfpost import queue as pfq
@@ -463,6 +551,59 @@ def main():
     check("disabled button explains why", "Connect" in composer.post_now.toolTip())
     composer.set_enabled(True)
     check("posting enabled once connected", composer.post_now.isEnabled())
+
+    # Last, because it installs the real application stylesheet. These read
+    # rendered pixels: a property being set proves nothing - the accent on
+    # message-box buttons was set, and ignored.
+    print("\n  rendered dialogs")
+    from PySide6.QtGui import QImage
+
+    def top_pixel(widget):
+        image = widget.grab().toImage()
+        return image.pixelColor(image.width() // 2, 4).name()
+
+    for dark in (False, True):
+        name = "dark" if dark else "light"
+        t = pftheme.tokens(dark)
+        t["check_image"] = pftheme.check_image(t["primary_text"])
+        _QApp.instance().setStyleSheet(pftheme.stylesheet(t))
+        found = {}
+
+        def probe(box):
+            for button in box.buttons():
+                found[button.text()] = top_pixel(button)
+            tick = box.checkBox()
+            if tick is not None:
+                found["off"] = tick.grab().toImage()
+                tick.setChecked(True)
+                found["on"] = tick.grab().toImage()
+                tick.setChecked(False)
+
+        pfstore.set_pref("warn_links", True)
+        answering(KEEP, lambda: composer.confirm_links(link, "public"), probe=probe)
+        check("%s: Edit caption renders in the accent colour" % name,
+              found.get(EDIT) == t["primary"], str(found.get(EDIT)))
+        check("%s: Keep the link does not" % name,
+              found.get(KEEP) not in (None, t["primary"]), str(found.get(KEEP)))
+        check("%s: ticking the box visibly changes it" % name,
+              "on" in found and found["on"] != found["off"])
+
+        answering("Post without it",
+                  lambda: composer.confirm_alt_text([(a, None)]), probe=probe)
+        check("%s: Add alt text renders in the accent colour" % name,
+              found.get("Add alt text") == t["primary"], str(found.get("Add alt text")))
+
+        # The box outline is the control's only affordance: 3:1 non-text floor.
+        for ground in ("bg", "surface"):
+            ratio = contrast(t["muted"], t[ground])
+            check("%s: checkbox outline on %s (%.2f:1)" % (name, ground, ratio),
+                  ratio >= 3.0)
+
+        tick = QImage(t["check_image"])
+        check("%s: tick image is a real drawing" % name,
+              not tick.isNull() and tick.pixelColor(27, 46).alpha() > 0
+              and tick.pixelColor(2, 2).alpha() == 0)
+    _QApp.instance().setStyleSheet("")
 
     print("\n%s" % ("GUI smoke test passed." if not FAILURES
                     else "%d GUI CHECK(S) FAILED: %s" % (len(FAILURES), FAILURES)))
