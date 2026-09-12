@@ -262,19 +262,28 @@ def is_dark(app) -> bool:
         return False
 
 
-def make_icon(size: int = 256):
-    """Draw the app icon: a gradient tile in the brand colours.
+# Every size Windows asks an .exe for, across Explorer's views and DPI scales.
+ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
+
+
+def draw_icon(size: int):
+    """Draw the app icon at one size: a gradient tile in the brand colours.
 
     Generated rather than shipped, so there is no binary asset to keep in sync -
-    and deliberately not a copy of Pixelfed's own mark.
+    and deliberately not a copy of Pixelfed's own mark. Each size is drawn
+    natively rather than shrunk from 256px, and the strokes have a floor in
+    whole pixels: at 16px a proportional ring is 1.2px wide and antialiasing
+    smears it into a grey smudge.
+
+    A QImage, not a QPixmap, so build.py can call it with no QApplication.
     """
     from PySide6.QtCore import QPointF, QRectF, Qt
-    from PySide6.QtGui import QBrush, QColor, QIcon, QLinearGradient, QPainter, QPen, QPixmap
+    from PySide6.QtGui import QBrush, QColor, QImage, QLinearGradient, QPainter, QPen
 
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
+    image = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
+    image.fill(Qt.transparent)
 
-    painter = QPainter(pixmap)
+    painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing)
 
     gradient = QLinearGradient(QPointF(0, 0), QPointF(size, size))
@@ -284,17 +293,61 @@ def make_icon(size: int = 256):
     painter.setPen(Qt.NoPen)
     painter.drawRoundedRect(QRectF(0, 0, size, size), size * 0.22, size * 0.22)
 
-    pen = QPen(QColor(255, 255, 255, 235))
-    pen.setWidthF(size * 0.075)
+    white = QColor(255, 255, 255, 235)
+    stroke = max(size * 0.075, 2.0)
+    pen = QPen(white)
+    pen.setWidthF(stroke)
     painter.setPen(pen)
     painter.setBrush(Qt.NoBrush)
-    inset = size * 0.30
+    inset = size * (0.27 if size <= 24 else 0.30)
     painter.drawEllipse(QRectF(inset, inset, size - inset * 2, size - inset * 2))
 
-    painter.setBrush(QColor(255, 255, 255, 235))
+    painter.setBrush(white)
     painter.setPen(Qt.NoPen)
-    dot = size * 0.085
+    dot = max(size * 0.085, 2.5)
     painter.drawEllipse(QRectF(size * 0.70, size * 0.19, dot, dot))
     painter.end()
+    return image
 
-    return QIcon(pixmap)
+
+def make_icon(size: int = 256):
+    """The app icon as a QIcon carrying every size, so the title bar and
+    taskbar pick a natively drawn one instead of scaling a large one down."""
+    from PySide6.QtGui import QIcon, QPixmap
+
+    icon = QIcon()
+    for each in sorted(set(ICON_SIZES) | {size}):
+        icon.addPixmap(QPixmap.fromImage(draw_icon(each)))
+    return icon
+
+
+def write_ico(path) -> None:
+    """Write the icon as a multi-size Windows .ico, for the executables.
+
+    The ICO container is a directory of entries, each here holding a PNG,
+    which Windows has read since Vista. Written by hand because Qt's ICO
+    writer stores a single size, and Pillow would be a build dependency
+    for thirty lines of struct packing.
+    """
+    import struct
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+
+    blobs = []
+    for size in ICON_SIZES:
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.WriteOnly)
+        draw_icon(size).save(buffer, "PNG")
+        buffer.close()
+        blobs.append((size, bytes(data)))
+
+    header = struct.pack("<HHH", 0, 1, len(blobs))          # reserved, type=icon
+    offset = len(header) + 16 * len(blobs)
+    entries, body = b"", b""
+    for size, png in blobs:
+        dim = 0 if size >= 256 else size                     # 0 means 256
+        entries += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32,
+                               len(png), offset + len(body))
+        body += png
+    with open(path, "wb") as handle:
+        handle.write(header + entries + body)

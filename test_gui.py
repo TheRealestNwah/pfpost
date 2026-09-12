@@ -52,7 +52,7 @@ def check(label, condition, detail=""):
 def main():
     app = QApplication([])                                    # noqa: F841
     from PySide6.QtCore import QEvent
-    from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtGui import QColor, QImage, QPalette
     from PySide6.QtWidgets import QApplication as _QApp
     from pfpost import theme as pftheme
     from pfpost.gui import ConnectDialog, MainWindow
@@ -520,6 +520,39 @@ def main():
     check("icon centre is painted", image.pixelColor(64, 64).alpha() == 255)
     check("icon corners are rounded, not square",
           image.pixelColor(1, 1).alpha() == 0)
+    check("the window icon carries every size, not one to be scaled",
+          {s.width() for s in icon.availableSizes()} >= set(pftheme.ICON_SIZES),
+          str(sorted(s.width() for s in icon.availableSizes())))
+
+    # At 16px a proportional 1.2px ring antialiases to grey. With the 2px
+    # floor, the ring crosses the middle row as near-white pixels.
+    small = pftheme.draw_icon(16)
+    bright = [x for x in range(16)
+              if min(small.pixelColor(x, 8).getRgb()[:3]) > 220]
+    check("16px ring is crisp, not a grey smudge", len(bright) >= 2, str(bright))
+
+    # Parsed here independently of write_ico, so a packing mistake cannot
+    # pass by agreeing with itself.
+    import struct
+    ico_path = Path(tempfile.mkdtemp()) / "pfpost.ico"
+    pftheme.write_ico(ico_path)
+    blob = ico_path.read_bytes()
+    reserved, kind, count = struct.unpack_from("<HHH", blob, 0)
+    check("ico header says icon", reserved == 0 and kind == 1, "%d %d" % (reserved, kind))
+    check("ico holds every size", count == len(pftheme.ICON_SIZES), str(count))
+    decoded = []
+    for index in range(count):
+        w, h, _c, _r, planes, bits, length, offset = struct.unpack_from(
+            "<BBBBHHII", blob, 6 + 16 * index)
+        png = blob[offset:offset + length]
+        picture = QImage.fromData(png, "PNG")
+        stated = w or 256
+        if (png[:8] == b"\x89PNG\r\n\x1a\n" and offset + length <= len(blob)
+                and picture.width() == picture.height() == stated == (h or 256)
+                and planes == 1 and bits == 32):
+            decoded.append(stated)
+    check("every ico entry decodes at its stated size",
+          decoded == list(pftheme.ICON_SIZES), str(decoded))
 
     check("theme detection returns a bool",
           isinstance(pftheme.is_dark(_QApp.instance()), bool))
@@ -556,7 +589,6 @@ def main():
     # rendered pixels: a property being set proves nothing - the accent on
     # message-box buttons was set, and ignored.
     print("\n  rendered dialogs")
-    from PySide6.QtGui import QImage
 
     def top_pixel(widget):
         image = widget.grab().toImage()

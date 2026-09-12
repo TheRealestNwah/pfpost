@@ -18,6 +18,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -44,11 +45,12 @@ def run(args: list[str]) -> None:
         raise SystemExit("Build failed: %s" % " ".join(args))
 
 
-def build(name: str, windowed: bool) -> None:
+def build(name: str, windowed: bool, icon: Path) -> None:
     args = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onefile",
         "--name", name,
+        "--icon", str(icon),
         "--distpath", str(ROOT / "dist"),
         "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build"),
@@ -67,8 +69,17 @@ def main() -> int:
         print("PyInstaller is not installed. Run:  pip install pyinstaller")
         return 1
 
-    build("pfpost", windowed=False)
-    build("pfpost-gui", windowed=True)
+    # Without --icon, PyInstaller stamps its default Python icon on both
+    # binaries. Drawn from the same code as the in-app icon, so the two
+    # cannot drift, and written to a temp dir so no .ico lives in the repo.
+    sys.path.insert(0, str(ROOT))
+    from pfpost import theme
+
+    with tempfile.TemporaryDirectory(prefix="pfpost-build-") as scratch:
+        icon = Path(scratch) / "pfpost.ico"
+        theme.write_ico(icon)
+        build("pfpost", windowed=False, icon=icon)
+        build("pfpost-gui", windowed=True, icon=icon)
 
     shutil.rmtree(ROOT / "build", ignore_errors=True)
     print("\nBuilt:")
