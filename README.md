@@ -12,6 +12,10 @@ authorization, and live posting from both the CLI and the desktop app —
 including automatic handling of instances whose web server caps request header
 size.
 
+> **Built with AI.** pfpost's code, tests and documentation were written by
+> Claude, an AI model from Anthropic, directed and tested by the maintainer. The
+> app itself uses no AI. See [AI disclosure](#ai-disclosure).
+
 ## Why it works this way
 
 Pixelfed has **no server-side post scheduling** — there is no `scheduled_at`
@@ -362,3 +366,26 @@ pixels where a style rule is known to be silently ignorable. It skips cleanly if
 PySide6 is absent.
 
 No network access and no credentials needed for either suite.
+
+## AI disclosure
+
+pfpost was developed with [Claude Code](https://claude.com/claude-code), using
+Anthropic's Claude Opus 5 model.
+
+- **Claude wrote** the code, the tests, this README and the release notes, and
+  did the investigation behind them — for example tracing an unlisted post to
+  Pixelfed's spam filter, or measuring gram.social's header limit.
+- **The maintainer** ([@TheRealestNwah](https://github.com/TheRealestNwah))
+  started the project, decided what it should do and how it should look,
+  tested each release against a real account, and reported the bugs it found.
+- **The history says so.** Commits Claude wrote carry a
+  `Co-Authored-By: Claude` trailer, so `git log` shows exactly which changes
+  were AI-written.
+
+**The app itself contains no AI.** It sends nothing to Anthropic or any other AI
+service. The only network traffic is to the Pixelfed instance you connect, plus
+a `localhost` listener that receives the sign-in redirect.
+
+As with any small open-source project, read the code before trusting it with an
+account. `pfpost/store.py` and `pfpost/session.py` are the parts that handle
+credentials.
