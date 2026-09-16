@@ -2,6 +2,12 @@
 
 Post to Pixelfed from the command line or a desktop app, now or on a schedule.
 
+| Compose | Queue |
+|---|---|
+| ![Compose tab in dark mode: two images with alt text, a caption, visibility, and Post now](docs/screenshots/compose-dark.png) | ![Queue tab in light mode: two pending posts and one posted, each with a status pill](docs/screenshots/queue-light.png) |
+
+<sub>pfpost 1.1.0 in dark and light mode, following your Windows setting. Sample images and account.</sub>
+
 Works with any Mastodon-compatible Pixelfed instance. Credentials go into your
 operating system's credential store, never into a file in the clear. The core
 is pure standard library; the only dependencies are `keyring` for cross-platform
