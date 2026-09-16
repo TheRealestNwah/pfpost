@@ -300,6 +300,49 @@ def main():
               s["media_ids"] == ["media_1", "media_2"], str(s["media_ids"]))
     check("returns the post url", result["url"] == "https://mock.test/p/morro/99")
 
+    print("\n5b. learning the account name (for Open account)")
+    check("username from the status's account",
+          api.status_username({"account": {"username": "nmorrow08"},
+                               "url": "https://x/p/other/1"}) == "nmorrow08")
+    check("falls back to Pixelfed's /p/<username>/<id> post URL",
+          api.status_username(result) == "morro", str(api.status_username(result)))
+    for label, junk in (("no url", {}), ("not a post url", {"url": "https://x/i/web/post/9"}),
+                        ("empty username segment", {"url": "https://x/p//9"}), ("None", None)):
+        check("no username from %s" % label, api.status_username(junk) is None)
+
+    learner = Session({"instance": "gram.social", "scopes": "write"})
+    learner.save = lambda: None                    # keep the real state file out of it
+    check("before any post, Open account goes to /i/me",
+          learner.profile_url() == "https://gram.social/i/me")
+    check("a write-only token has no name yet", learner.identity() is None)
+    learner.learn_from_status({"url": "https://gram.social/p/nmorrow08/1003756385650833832"})
+    check("a post teaches it the username", learner.state.get("username") == "nmorrow08")
+    check("write-only identity() now answers without a network call",
+          (RECEIVED.clear(), learner.identity(), len(RECEIVED))[1:] == ("nmorrow08", 0))
+    check("Open account goes straight to the profile",
+          learner.profile_url() == "https://gram.social/nmorrow08")
+    for hostile in ("../settings", "a/b", "x?y=1", "name with space", "@nmorrow08", "a" * 65):
+        learner.remember_username(hostile)
+        check("refuses a username that would bend the URL: %r" % hostile[:12],
+              learner.state["username"] == "nmorrow08")
+
+    queued_learner = Session(dict(session.state))
+    queued_learner.save = lambda: None
+    queued_learner.state.pop("username", None)
+    pfqueue.store.save_queue({"items": []})
+    pfqueue.add([(img_a, "alt")], "learn from the queue", "public",
+                datetime.now(timezone.utc) - timedelta(minutes=1))
+    pfqueue.run(queued_learner)
+    check("a queued post teaches it too", queued_learner.state.get("username") == "morro",
+          str(queued_learner.state.get("username")))
+    pfqueue.store.save_queue({"items": []})
+
+    signed_out = Session({"instance": "gram.social", "username": "nmorrow08"})
+    signed_out.save = lambda: None
+    signed_out.disconnect(forget_client=False)
+    check("disconnecting forgets the username - the next sign-in may be someone else",
+          "username" not in signed_out.state)
+
     print("\n6. time parsing")
     now = datetime.now(timezone.utc)
     rel = pfqueue.parse_when("+2h")
@@ -558,6 +601,31 @@ def main():
     for junk in ("", "   ", "not json", "null", "[]", "Get-ScheduledTask : error"):
         check("treats %r as no task" % junk[:20],
               sched.parse_status(junk)["registered"] is False)
+
+    check("a healthy task is not broken", parsed["broken"] is False)
+    check("status command checks the task's program exists",
+          "Test-Path -LiteralPath" in sched.build_status_command()
+          and "Actions[0].Execute" in sched.build_status_command())
+    # The real case: the task ran a Python 3.14 pythonw.exe that was uninstalled.
+    gone = sched.parse_status(
+        '{"registered":true,"state":"Ready","lastResult":2147942402,"interval":"PT15M",'
+        '"program":"C:\\\\Python\\\\pythoncore-3.14-64\\\\pythonw.exe","programExists":false}')
+    check("a missing program marks the task broken", gone["broken"] is True)
+    check("and names the program", gone["program"].endswith("pythonw.exe"), gone["program"])
+    check("a missing program is broken even before it has failed a run",
+          sched.parse_status('{"registered":true,"lastResult":0,"programExists":false}')
+          ["broken"] is True)
+    for code in (2147942402, 2147942403):
+        check("result 0x%X alone marks it broken" % code,
+              sched.parse_status('{"registered":true,"lastResult":%d}' % code)["broken"])
+    check("an ordinary failure code is not called broken",
+          sched.parse_status('{"registered":true,"lastResult":1,"programExists":true}')
+          ["broken"] is False)
+    check("output without the program check is not assumed broken",
+          sched.parse_status('{"registered":true,"lastResult":0}')["broken"] is False)
+    for iso, minutes in (("PT15M", 15), ("PT1H", 60), ("PT2H", 120), ("", None), ("P1D", None)):
+        check("interval %r is %s minutes" % (iso, minutes),
+              sched.interval_minutes(iso) == minutes)
 
     check("describes minutes", sched.describe_interval("PT15M") == "every 15 minutes")
     check("singular minute", sched.describe_interval("PT1M") == "every 1 minute")

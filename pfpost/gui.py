@@ -13,13 +13,14 @@ from pathlib import Path
 from PySide6.QtCore import (QDateTime, QEvent, QSize, Qt, QThread, QTimer,
                             QUrl, Signal)
 from PySide6.QtGui import (QAction, QColor, QDesktopServices, QIcon,
-                           QPalette, QPixmap)
+                           QPalette, QPixmap, QTextCharFormat)
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar,
-    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QPushButton, QSplitter, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -213,6 +214,7 @@ class AccountBar(QWidget):
 
     connect_requested = Signal()
     disconnect_requested = Signal()
+    open_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -223,6 +225,9 @@ class AccountBar(QWidget):
         self.primary.setStyleSheet("font-weight:bold")
         self.detail = QLabel("")
 
+        self.open_button = QPushButton("Open account")
+        self.open_button.clicked.connect(self.open_requested)
+        self.open_button.setVisible(False)
         self.button = QPushButton("Connect account")
         self.button.clicked.connect(self._clicked)
         self._connected = False
@@ -237,6 +242,7 @@ class AccountBar(QWidget):
         layout.addWidget(self.dot)
         layout.addWidget(self.primary)
         layout.addWidget(self.detail, 1)
+        layout.addWidget(self.open_button)
         layout.addWidget(self.button)
         self.apply_theme()
 
@@ -279,6 +285,7 @@ class AccountBar(QWidget):
     def show_state(self, info: dict, username: str | None = None):
         self._last_state, self._last_username = info, username
         self._connected = bool(info.get("connected"))
+        self.open_button.setVisible(self._connected)
         if not info.get("configured"):
             self.dot.setStyleSheet("color:%s" % self.tokens["danger"])
             self.primary.setText("Not connected")
@@ -301,8 +308,8 @@ class AccountBar(QWidget):
         if username:
             bits.append(info.get("instance", ""))
         bits.append("scopes: %s" % info.get("scopes"))
-        if not info.get("can_read"):
-            bits.append("write-only, so the account name is unavailable")
+        if not info.get("can_read") and not username:
+            bits.append("write-only, so your account name shows after your first post")
         bits.append("secrets: %s" % info.get("backend"))
         self.detail.setText("  |  ".join(b for b in bits if b))
         self.button.setText("Disconnect")
@@ -347,10 +354,18 @@ class Composer(QWidget):
 
         self.visibility = QComboBox()
         self.visibility.addItems(["public", "unlisted", "private"])
+        # The default combo delegate ignores ::item stylesheet rules, so the
+        # popup rows would keep their cramped native look without this.
+        self.visibility.setItemDelegate(QStyledItemDelegate(self.visibility))
         self.visibility.setMinimumWidth(130)
 
         self.when = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600))
         self.when.setCalendarPopup(True)
+        # Qt paints weekends red by default; Pixelfed has no such convention.
+        calendar = self.when.calendarWidget()
+        for day in (Qt.Saturday, Qt.Sunday):
+            calendar.setWeekdayTextFormat(day, QTextCharFormat())
+        calendar.setVerticalHeaderFormat(calendar.VerticalHeaderFormat.NoVerticalHeader)
         self.when.setDisplayFormat("yyyy-MM-dd HH:mm")
         self.when.setMinimumWidth(230)
 
@@ -628,6 +643,10 @@ class Composer(QWidget):
 
     def post_ok(self, result):
         self.busy(False)
+        try:
+            self.session.learn_from_status(result)
+        except Exception:
+            pass                # a convenience; never fail a published post over it
         self.clear()
         self.posted.emit(result.get("url") or "(posted)")
 
@@ -755,8 +774,22 @@ class QueuePanel(QWidget):
 
     def runner_state(self, info: dict):
         self.runner_registered = bool(info.get("registered"))
+        self.runner_broken = bool(self.runner_registered and info.get("broken"))
+        self.runner_minutes = (scheduler.interval_minutes(info.get("interval", ""))
+                               or scheduler.DEFAULT_INTERVAL)
         self.runner_button.setEnabled(True)
-        if self.runner_registered:
+        if self.runner_broken:
+            # The task exists but cannot start - e.g. it runs a Python that was
+            # uninstalled. Windows only reports 0x80070002, which means nothing
+            # to a person, and nothing posts until it is re-pointed.
+            program = info.get("program") or "its program"
+            self.runner_label.setText(
+                "Background posting is broken - the program it runs is missing "
+                "(%s), so nothing posts while pfpost is closed. Repair points it "
+                "at this copy of pfpost." % program)
+            self.runner_label.setStyleSheet("color:%s" % self.tokens["danger"])
+            self.runner_button.setText("Repair background posting")
+        elif self.runner_registered:
             when = scheduler.describe_interval(info.get("interval", ""))
             extra = ""
             if info.get("last_result") not in (None, 0, 267011):
@@ -774,7 +807,10 @@ class QueuePanel(QWidget):
             self.runner_button.setText("Enable background posting")
 
     def toggle_runner(self):
-        if self.runner_registered:
+        if getattr(self, "runner_broken", False):
+            # Re-register in place, keeping the interval the user chose.
+            action, args = scheduler.register, (self.runner_minutes,)
+        elif self.runner_registered:
             if QMessageBox.question(
                     self, "pfpost",
                     "Turn off background posting?\n\nQueued posts will then only "
@@ -912,6 +948,9 @@ class MainWindow(QMainWindow):
 
         self.account_bar.connect_requested.connect(self.connect_account)
         self.account_bar.disconnect_requested.connect(self.disconnect_account)
+        self.account_bar.open_requested.connect(self.open_account)
+        # A post, from either panel, is how a write-only token learns its name.
+        self.queue_panel.changed.connect(lambda _message: self.sync_account_name())
         self.composer.posted.connect(self.on_posted)
         self.composer.queued.connect(self.on_queued)
         self.composer.status.connect(self.say)
@@ -922,7 +961,12 @@ class MainWindow(QMainWindow):
         self.disconnect_action = QAction("Disconnect", self)
         self.disconnect_action.triggered.connect(self.disconnect_account)
 
+        self.open_action = QAction("Open account in browser", self)
+        self.open_action.triggered.connect(self.open_account)
+
         menu = self.menuBar().addMenu("Account")
+        menu.addAction(self.open_action)
+        menu.addSeparator()
         menu.addAction(self.connect_action)
         menu.addAction(self.disconnect_action)
 
@@ -966,7 +1010,25 @@ class MainWindow(QMainWindow):
     def say(self, message: str):
         self.statusBar().showMessage(message, 12000)
 
+    def open_account(self):
+        if not self.session.status()["connected"]:
+            return
+        url = self.session.profile_url()
+        # The instance name came from user input; only ever hand the OS a web URL.
+        if not url.startswith("https://"):
+            return
+        QDesktopServices.openUrl(QUrl(url))
+        self.say("Opened %s" % url)
+
+    def sync_account_name(self):
+        """Show a username learned from a post. No network."""
+        name = self.session.state.get("username")
+        if name and name != self.account_bar._last_username:
+            self.account_bar.show_state(self.session.status(), name)
+            self.account_bar.open_button.setToolTip(self.session.profile_url())
+
     def on_posted(self, url: str):
+        self.sync_account_name()
         self.say("Posted: %s" % url)
         PostedDialog(url, self).exec()
 
@@ -991,7 +1053,10 @@ class MainWindow(QMainWindow):
 
     def refresh_account(self):
         info = self.session.status()
-        self.account_bar.show_state(info)
+        self.account_bar.show_state(info, self.session.state.get("username"))
+        self.account_bar.open_button.setToolTip(
+            self.session.profile_url() if info["connected"] else "")
+        self.open_action.setEnabled(info["connected"])
         self.disconnect_action.setEnabled(info["configured"])
         self.composer.set_enabled(info["connected"])
         if not info["connected"]:
@@ -1018,6 +1083,7 @@ class MainWindow(QMainWindow):
         limits, username = result
         self.composer.set_limits(limits)
         self.account_bar.show_state(self.session.status(), username)
+        self.account_bar.open_button.setToolTip(self.session.profile_url())
         detail = []
         if limits.get("max_media_attachments"):
             detail.append("max %d attachments" % limits["max_media_attachments"])
@@ -1072,6 +1138,12 @@ def apply_theme(app) -> dict:
         tokens["check_image"] = theme.check_image(tokens["primary_text"])
     except OSError:
         pass                    # no temp dir: a filled box still reads as ticked
+    try:
+        for direction, key in (("down", "chevron_image"), ("left", "chevron_left_image"),
+                               ("right", "chevron_right_image")):
+            tokens[key] = theme.chevron_image(tokens["text"], direction)
+    except OSError:
+        pass                    # without them the native dropdown styling is kept
     app.setStyleSheet(theme.stylesheet(tokens))
     return tokens
 
@@ -1084,6 +1156,10 @@ def main():
         app.setWindowIcon(theme.make_icon())
     except Exception:
         pass                       # an icon is not worth failing to start over
+    try:
+        theme.install_font(app)
+    except Exception:
+        pass                       # nor is a font; the platform font remains
 
     tokens = apply_theme(app)
     window = MainWindow(tokens)

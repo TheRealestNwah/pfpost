@@ -320,6 +320,21 @@ def link_triggers(caption: str, visibility: str) -> list[str]:
             if any(marker in word for marker in LINK_MARKERS)]
 
 
+def status_username(status: dict) -> str | None:
+    """The posting account's username, from a status JSON.
+
+    `account.username` where present; otherwise parsed from Pixelfed's post
+    URL, https://host/p/<username>/<id>.
+    """
+    name = ((status or {}).get("account") or {}).get("username")
+    if name:
+        return name
+    parts = urllib.parse.urlsplit((status or {}).get("url") or "").path.strip("/").split("/")
+    if len(parts) == 3 and parts[0] == "p" and parts[1]:
+        return parts[1]
+    return None
+
+
 class ValidationError(Exception):
     pass
 

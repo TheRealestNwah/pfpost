@@ -25,6 +25,11 @@ DURATION_DAYS = 3650
 
 IS_WINDOWS = sys.platform == "win32"
 
+# Task Scheduler's result when the program a task runs cannot be found:
+# 0x80070002 (file not found) and 0x80070003 (path not found). Seen in practice
+# when the Python a source-checkout task pointed at was uninstalled.
+MISSING_PROGRAM_CODES = (0x80070002, 0x80070003)
+
 
 class SchedulerError(Exception):
     pass
@@ -91,7 +96,10 @@ def build_status_command(name: str = TASK_NAME) -> str:
         "[pscustomobject]@{ registered = $true; state = [string]$t.State; "
         "lastRun = [string]$i.LastRunTime; lastResult = $i.LastTaskResult; "
         "nextRun = [string]$i.NextRunTime; "
-        "interval = [string]$t.Triggers[0].Repetition.Interval } "
+        "interval = [string]$t.Triggers[0].Repetition.Interval; "
+        "program = [string]$t.Actions[0].Execute; "
+        "programExists = [bool](Test-Path -LiteralPath "
+        "([Environment]::ExpandEnvironmentVariables([string]$t.Actions[0].Execute).Trim('\"'))) } "
         "| ConvertTo-Json -Compress }" % ps_quote(name),
     ])
 
@@ -120,14 +128,31 @@ def parse_status(output: str) -> dict:
         return {"registered": False}
     if not isinstance(data, dict) or not data.get("registered"):
         return {"registered": False}
+    exists = data.get("programExists")
+    last_result = data.get("lastResult")
     return {
         "registered": True,
         "state": data.get("state") or "",
         "last_run": data.get("lastRun") or "",
-        "last_result": data.get("lastResult"),
+        "last_result": last_result,
         "next_run": data.get("nextRun") or "",
         "interval": data.get("interval") or "",
+        "program": data.get("program") or "",
+        # Unknown (older output, or the check failed) is not evidence of breakage.
+        "program_exists": exists is not False,
+        "broken": exists is False or last_result in MISSING_PROGRAM_CODES,
     }
+
+
+def interval_minutes(iso: str) -> int | None:
+    """'PT15M' -> 15, 'PT1H' -> 60; None for anything else."""
+    text = (iso or "").upper()
+    if text.startswith("PT") and text[2:-1].isdigit():
+        if text.endswith("M"):
+            return int(text[2:-1])
+        if text.endswith("H"):
+            return int(text[2:-1]) * 60
+    return None
 
 
 def describe_interval(iso: str) -> str:

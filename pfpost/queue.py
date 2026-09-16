@@ -233,6 +233,10 @@ def run(session, limit: int = 0, on_event=None) -> list[dict]:
         try:
             api.validate(images, live["caption"], limits)
             result = client.publish(images, live["caption"], live["visibility"])
+            try:
+                session.learn_from_status(result)
+            except Exception:
+                pass            # a convenience; never fail a published post over it
             live["status"] = "posted"
             live["result_url"] = result.get("url")
             live["posted_at"] = datetime.now(timezone.utc).isoformat()

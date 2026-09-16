@@ -15,6 +15,7 @@ windowed build has nowhere to print CLI output.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,10 @@ def build(name: str, windowed: bool, icon: Path) -> None:
     ]
     for module in HIDDEN:
         args += ["--hidden-import", module]
+    # The font and its licence. theme.install_font() finds them next to
+    # theme.py, which in a frozen build is pfpost/ inside the unpacked bundle.
+    # Missing, the app would quietly fall back to Segoe UI.
+    args += ["--add-data", "%s%spfpost/fonts" % (ROOT / "pfpost" / "fonts", os.pathsep)]
     args += ["--windowed"] if windowed else ["--console"]
     args.append(str(ENTRY))
     run(args)

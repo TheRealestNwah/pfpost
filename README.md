@@ -164,6 +164,11 @@ your `@name`, amber when a client is registered but not yet authorized, red when
 there is nothing set up. Posting is disabled until you connect, so the window
 never looks usable when it isn't.
 
+**Open account** (in that bar, and under the Account menu) opens your profile in
+the browser. A write-only token can't ask the server who you are, so pfpost
+learns your username from the reply to your first post; until then it opens
+`/i/me`, which Pixelfed redirects to your profile if you're signed in on the web.
+
 Needs `PySide6`. The CLI works without it.
 
 ### Theme
@@ -184,7 +189,14 @@ light-mode values fall under the contrast floor on a dark ground.
 
 Contrast is asserted, not eyeballed: `test_gui.py` computes WCAG relative
 luminance for every text and status colour against both backgrounds in both
-palettes — body text to 4.5:1, secondary and status colours to 3:1.
+palettes — body text to 4.5:1, secondary and status colours to 3:1. Field and
+dropdown outlines get their own `input_border` token at 3:1 or better, because
+an outline is the only thing marking where those controls are.
+
+The font is **IBM Plex Sans**, the typeface of Pixelfed's signed-in web app. It
+is bundled (`pfpost/fonts/`) because Windows doesn't ship it, and falls back to
+Segoe UI if it can't load. Dropdown and calendar arrows are drawn by the app, in
+the theme's text colour, so they stay visible in dark mode.
 
 The app icon is drawn at runtime from the same two brand colours, so there is no
 binary asset to keep in sync.
@@ -277,10 +289,16 @@ pfpost.exe queue run
 desktop app is open it checks every minute, so due posts go out without you
 clicking anything. The scheduled task below is what covers pfpost being closed —
 its interval is the worst-case delay in that case, not while the app is running.
- In the desktop
-app, the row under the queue table says whether background posting is on and
-turns it on for you; queue something with it off and pfpost offers to enable it
-rather than letting the post sit there silently.
+In the desktop app, the row under the queue table says whether background
+posting is on and turns it on for you; queue something with it off and pfpost
+offers to enable it rather than letting the post sit there silently.
+
+The task runs a specific program: `pfpost-gui.exe` from wherever you enabled it,
+or, from source, that environment's `pythonw.exe`. If that program disappears —
+the folder moved, or the Python it used was uninstalled — Windows quietly fails
+every run with code `0x80070002`. The row detects this, says **Background posting
+is broken**, and offers **Repair**, which points the task at the copy of pfpost
+you're running and keeps your interval.
 
 From the command line:
 
@@ -353,6 +371,7 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
 | `429` | Rate limited; `/oauth/token` is capped at 10 requests/minute. |
 | Redirect never arrives | Redirect URL on the client must match `http://localhost:8080/callback` exactly. |
 | Port 8080 busy | Another dev server has it. Register with `--port` and re-run `auth`. |
+| Background task result `2147942402` / `0x80070002` | The program the task runs is gone (moved folder, uninstalled Python). Click **Repair background posting** in the app. |
 | `CryptUnprotectData failed` | Credential was created by a different Windows user. Re-run `register`. |
 | `No secure credential store is available` | Install keyring: `pip install keyring`. |
 | `can't open file 'pfpost.py'` | Wrong working directory — `cd "D:\Projects\Pixelfed Poster"` first. |
@@ -380,6 +399,14 @@ missing it **fails** rather than skipping, so running it on the wrong Python
 can't pass by testing nothing; set `PFPOST_SKIP_GUI_TESTS=1` to skip on purpose.
 
 No network access and no credentials needed for either suite.
+
+## Third-party font
+
+`pfpost/fonts/IBMPlexSans[wdth,wght].ttf` is IBM Plex Sans, Copyright © 2017 IBM
+Corp., licensed under the SIL Open Font License 1.1 — see
+`pfpost/fonts/OFL.txt`. It was taken unmodified from
+[google/fonts](https://github.com/google/fonts/tree/main/ofl/ibmplexsans). The
+MIT licence covers pfpost's own code, not the font.
 
 ## AI disclosure
 

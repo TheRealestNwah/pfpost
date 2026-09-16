@@ -7,6 +7,7 @@ GUI use `Session`; neither needs to know how tokens are stored or refreshed.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 import webbrowser
@@ -265,11 +266,43 @@ class Session:
         }
 
     def identity(self) -> str | None:
-        """@username, or None when the token has no read scope."""
+        """The account's username, or None if it cannot be known yet.
+
+        A read token asks the server. A write-only token cannot, so it falls
+        back to the name learned from the last post's response.
+        """
         if not self.can_read:
-            return None
-        me = self.client().verify_credentials()
-        return me.get("username")
+            return self.state.get("username")
+        name = self.client().verify_credentials().get("username")
+        self.remember_username(name)
+        return name
+
+    def remember_username(self, name: str | None) -> None:
+        # It is spliced into a URL the desktop opens, so only a plain name will do.
+        if not name or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name):
+            return
+        if name != self.state.get("username"):
+            self.state["username"] = name
+            self.save()
+
+    def learn_from_status(self, status: dict) -> None:
+        """Record who posted, from a create-status response.
+
+        Every post reply names its account, so even a write-only token - which
+        cannot call verify_credentials - learns the username on first post.
+        """
+        self.remember_username(api.status_username(status))
+
+    def profile_url(self) -> str:
+        """Where "Open account" goes.
+
+        Without a known username, Pixelfed's /i/me redirects a signed-in
+        browser to its own profile.
+        """
+        name = self.state.get("username")
+        if name:
+            return "https://%s/%s" % (self.instance, name)
+        return "https://%s/i/me" % self.instance
 
     def disconnect(self, forget_client: bool = True) -> None:
         """Remove local credentials.
@@ -281,6 +314,8 @@ class Session:
         token_ref = self.state.pop("token", None)
         if token_ref:
             store.forget_secret(token_ref)
+        # Signing back in may be as someone else; relearn rather than guess.
+        self.state.pop("username", None)
         if forget_client:
             secret_ref = self.state.pop("client_secret", None)
             if secret_ref:

@@ -192,6 +192,10 @@ def cmd_post(args):
                                           on_progress=progress)
     except (AuthError, api.ApiError, store.StorageError) as exc:
         die(exc)
+    try:
+        session.learn_from_status(result)
+    except Exception:
+        pass                # a convenience; never fail a published post over it
     print("\nPosted: %s" % (result.get("url") or result.get("uri") or "(no url returned)"))
 
 

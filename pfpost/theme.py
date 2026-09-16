@@ -28,6 +28,7 @@ LIGHT = {
     "surface_alt": "#f1f3f5",
     "border": "#dee2e6",
     "border_strong": "#ced4da",
+    "input_border": "#80868c",  # >= 3.3:1 on every light ground
     "text": "#212529",
     "muted": "#6c757d",
     "danger": "#dc3545",
@@ -48,6 +49,7 @@ DARK = {
     "surface_alt": "#23282e",
     "border": "#343a40",
     "border_strong": "#495057",
+    "input_border": "#737b83",  # >= 3.4:1 on every dark ground
     "text": "#e9ecef",
     "muted": "#9aa4ae",
     "danger": "#f1707b",        # lightened so it stays legible on dark
@@ -109,30 +111,46 @@ QPushButton[accent="true"]:disabled { background: %(border)s; border-color: %(bo
 
 QPushButton[danger="true"]:hover { border-color: %(danger)s; color: %(danger)s; }
 
+/* input_border, not border_strong: an input's outline is its only edge, and
+   border_strong measured 1.3-2.2:1 against the grounds - under the 3:1 that
+   WCAG asks of control boundaries. Focus uses primary for the same reason;
+   the brand cyan is about 2:1 on white. */
 QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QDateTimeEdit, QSpinBox {
     background: %(surface)s;
-    border: 1px solid %(border_strong)s;
+    border: 1px solid %(input_border)s;
     border-radius: 6px;
     padding: 5px 8px;
     selection-background-color: %(primary)s;
     selection-color: %(primary_text)s;
 }
+QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover, QDateTimeEdit:hover {
+    border-color: %(primary)s;
+}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus,
 QComboBox:focus, QDateTimeEdit:focus {
-    border-color: %(accent)s;
+    border-color: %(primary)s;
 }
 QLineEdit:read-only { background: %(surface_alt)s; color: %(muted)s; }
 QLineEdit:disabled, QPlainTextEdit:disabled { color: %(muted)s; background: %(bg)s; }
 
-/* Deliberately not styling ::drop-down. Doing so replaces the whole
-   sub-control, and Qt then draws no arrow at all, leaving both the
-   visibility picker and the date field looking like inert boxes. */
-QComboBox, QDateTimeEdit { padding-right: 4px; }
+QComboBox, QDateTimeEdit { min-height: 22px; }
 QComboBox QAbstractItemView {
     background: %(surface)s;
-    border: 1px solid %(border)s;
-    selection-background-color: %(primary)s;
-    selection-color: %(primary_text)s;
+    color: %(text)s;
+    border: 1px solid %(input_border)s;
+    border-radius: 6px;
+    padding: 4px;
+    outline: none;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 4px;
+}
+QComboBox QAbstractItemView::item:hover { background: %(surface_alt)s; }
+QComboBox QAbstractItemView::item:selected {
+    background: %(primary)s;
+    color: %(primary_text)s;
 }
 
 QTableWidget, QTableView {
@@ -203,7 +221,69 @@ QToolTip {
 #accountBar { background: %(surface)s; border-bottom: 1px solid %(border)s; }
 #sectionLabel { color: %(muted)s; font-weight: 600; }
 #dropHint { color: %(muted)s; }
-""" % dict(t, check_image=t.get("check_image", ""))
+""" % dict(t, check_image=t.get("check_image", "")) + (
+        DROPDOWN_RULES % t
+        if all(t.get(k) for k in ("chevron_image", "chevron_left_image",
+                                  "chevron_right_image")) else "")
+
+
+# Styling ::drop-down replaces the whole sub-control and Qt then draws no arrow,
+# so ::down-arrow must supply its own image. Only emitted when that image
+# exists: a drop-down rule without one leaves the control looking inert.
+DROPDOWN_RULES = """
+QComboBox, QDateTimeEdit { padding: 0 30px 0 10px; min-height: 32px; }  /* = button height */
+QComboBox::drop-down, QDateTimeEdit::drop-down {
+    subcontrol-origin: padding;      /* inside the outline, which stays whole */
+    subcontrol-position: top right;
+    width: 30px;
+    border: none;
+    border-left: 1px solid %(input_border)s;
+    border-top-right-radius: 5px;
+    border-bottom-right-radius: 5px;
+    background: %(surface_alt)s;
+}
+QComboBox::drop-down:hover, QDateTimeEdit::drop-down:hover,
+QComboBox::drop-down:on { background: %(selection)s; }
+QComboBox::down-arrow, QDateTimeEdit::down-arrow {
+    image: url("%(chevron_image)s");
+    width: 12px;
+    height: 12px;
+}
+
+/* The date field's calendar popup. */
+QCalendarWidget QWidget#qt_calendar_navigationbar {
+    background: %(surface_alt)s;
+    border-bottom: 1px solid %(border)s;
+}
+QCalendarWidget QToolButton {
+    background: transparent;
+    color: %(text)s;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-weight: 600;
+}
+QCalendarWidget QToolButton:hover { background: %(selection)s; }
+QCalendarWidget QToolButton::menu-indicator { image: none; width: 0; }
+QCalendarWidget QToolButton#qt_calendar_prevmonth {
+    qproperty-icon: url("%(chevron_left_image)s");
+    qproperty-iconSize: 14px;
+}
+QCalendarWidget QToolButton#qt_calendar_nextmonth {
+    qproperty-icon: url("%(chevron_right_image)s");
+    qproperty-iconSize: 14px;
+}
+QCalendarWidget QMenu { background: %(surface)s; }
+QCalendarWidget QSpinBox { min-height: 0; padding: 2px 4px; }
+QCalendarWidget QAbstractItemView {
+    background: %(surface)s;
+    color: %(text)s;
+    selection-background-color: %(primary)s;
+    selection-color: %(primary_text)s;
+    outline: none;
+}
+QCalendarWidget QAbstractItemView:disabled { color: %(muted)s; }
+"""
 
 
 def check_image(color: str) -> str:
@@ -214,14 +294,34 @@ def check_image(color: str) -> str:
     SVG: SVG needs an image plugin a frozen build could lack, and a missing
     tick would make a ticked box look unticked.
     """
+    return _stroke_image("check", color, ((0.22, 0.52), (0.42, 0.72), (0.78, 0.30)))
+
+
+CHEVRONS = {
+    "down": ((0.20, 0.36), (0.50, 0.66), (0.80, 0.36)),
+    "left": ((0.62, 0.20), (0.34, 0.50), (0.62, 0.80)),
+    "right": ((0.38, 0.20), (0.66, 0.50), (0.38, 0.80)),
+}
+
+
+def chevron_image(color: str, direction: str = "down") -> str:
+    """A chevron arrow. Styling ::drop-down replaces Qt's own arrow, and the
+    calendar's month buttons draw a black triangle whatever the theme, so the
+    stylesheet has to supply these or the controls look inert."""
+    name = "chevron" if direction == "down" else "chevron-%s" % direction
+    return _stroke_image(name, color, CHEVRONS[direction])
+
+
+def _stroke_image(kind: str, color: str, points) -> str:
+    """Draw a round-capped polyline into a cached PNG; return its path."""
     import tempfile
     from pathlib import Path
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
 
-    path = Path(tempfile.gettempdir()) / ("pfpost-check-%s.png" % color.lstrip("#"))
+    path = Path(tempfile.gettempdir()) / ("pfpost-%s-%s.png" % (kind, color.lstrip("#")))
     if not path.exists():
-        size = 64                   # drawn large; Qt scales it to the 16px box
+        size = 64                   # drawn large; Qt scales it down to the control
         image = QImage(size, size, QImage.Format_ARGB32)
         image.fill(Qt.transparent)
         painter = QPainter(image)
@@ -231,13 +331,42 @@ def check_image(color: str) -> str:
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
-        tick = QPainterPath(QPointF(size * 0.22, size * 0.52))
-        tick.lineTo(QPointF(size * 0.42, size * 0.72))
-        tick.lineTo(QPointF(size * 0.78, size * 0.30))
-        painter.drawPath(tick)
+        (x, y), rest = points[0], points[1:]
+        line = QPainterPath(QPointF(size * x, size * y))
+        for x, y in rest:
+            line.lineTo(QPointF(size * x, size * y))
+        painter.drawPath(line)
         painter.end()
         image.save(str(path), "PNG")
     return path.as_posix()
+
+
+FONT_FAMILY = "IBM Plex Sans"
+FONT_FILE = "IBMPlexSans[wdth,wght].ttf"
+FONT_POINT_SIZE = 10
+
+
+def install_font(app) -> str | None:
+    """Make IBM Plex Sans the application font; return the family, or None.
+
+    Plex is what Pixelfed's signed-in web app uses (its spa.css). It is bundled
+    under the SIL Open Font License - see pfpost/fonts/OFL.txt - because
+    Windows does not ship it. If it cannot load, the platform font stays.
+    """
+    from pathlib import Path
+    from PySide6.QtGui import QFont, QFontDatabase
+
+    path = Path(__file__).resolve().parent / "fonts" / FONT_FILE
+    if not path.is_file():
+        return None
+    font_id = QFontDatabase.addApplicationFont(str(path))
+    if font_id < 0 or FONT_FAMILY not in QFontDatabase.applicationFontFamilies(font_id):
+        return None
+    font = QFont()
+    font.setFamilies([FONT_FAMILY, "Segoe UI"])
+    font.setPointSize(FONT_POINT_SIZE)
+    app.setFont(font)
+    return FONT_FAMILY
 
 
 def is_dark(app) -> bool:

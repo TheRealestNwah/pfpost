@@ -65,6 +65,26 @@ def main():
 
     TOKENS = pftheme.tokens(dark=False)
 
+    # Before any widget exists, as main() does - the width checks below
+    # measure text in the font the app actually ships.
+    print("\nFont")
+    family = pftheme.install_font(_QApp.instance())
+    check("IBM Plex Sans loads from the bundled file", family == "IBM Plex Sans",
+          str(family))
+    from PySide6.QtGui import QFontInfo
+    check("it becomes the application font",
+          QFontInfo(_QApp.instance().font()).family() == "IBM Plex Sans",
+          QFontInfo(_QApp.instance().font()).family())
+    check("the OFL licence ships beside it, as the licence requires",
+          (Path(pftheme.__file__).parent / "fonts" / "OFL.txt").is_file())
+    real_file = pftheme.FONT_FILE
+    pftheme.FONT_FILE = "missing.ttf"
+    try:
+        check("a missing font file leaves the platform font, without raising",
+              pftheme.install_font(_QApp.instance()) is None)
+    finally:
+        pftheme.FONT_FILE = real_file
+
     tmp = Path(tempfile.mkdtemp())
     a, b = tmp / "a.png", tmp / "b.png"
     a.write_bytes(PNG)
@@ -158,6 +178,50 @@ def main():
     check("write-only explains the missing username",
           "write-only" in bar.detail.text(), bar.detail.text())
 
+    print("\n  open account")
+    write_only = {"configured": True, "connected": True, "instance": "gram.social",
+                  "scopes": "write", "can_read": False, "backend": "keyring"}
+    bar.show_state(write_only, username="nmorrow08")
+    check("a learned username shows even on a write-only token",
+          "@nmorrow08" in bar.primary.text(), bar.primary.text())
+    check("and the 'unavailable' note goes away",
+          "write-only" not in bar.detail.text(), bar.detail.text())
+    check("Open account is offered once connected",
+          not bar.open_button.isHidden())
+    bar.show_state({"configured": True, "connected": False, "instance": "gram.social"})
+    check("but not while signed out", bar.open_button.isHidden())
+    bar.show_state({"configured": False, "connected": False})
+    check("nor when nothing is set up", bar.open_button.isHidden())
+
+    import pfpost.gui as pfgui
+    opened = []
+    real_open = pfgui.QDesktopServices.openUrl
+    pfgui.QDesktopServices.openUrl = lambda url: opened.append(url.toString())
+    real_status = window.session.status
+    try:
+        window.session.state.update({"instance": "gram.social", "username": "nmorrow08"})
+        window.session.status = lambda: dict(write_only)
+        window.open_account()
+        check("opens the profile when the username is known",
+              opened == ["https://gram.social/nmorrow08"], str(opened))
+        opened.clear()
+        window.session.state.pop("username")
+        window.open_account()
+        check("otherwise opens /i/me, which Pixelfed redirects to your profile",
+              opened == ["https://gram.social/i/me"], str(opened))
+        opened.clear()
+        window.session.status = lambda: {"configured": True, "connected": False}
+        window.open_account()
+        check("does nothing while signed out", opened == [], str(opened))
+        window.session.status = lambda: dict(write_only)
+        window.account_bar.open_button.click()
+        check("the button is wired to it", len(opened) == 1, str(opened))
+    finally:
+        pfgui.QDesktopServices.openUrl = real_open
+        window.session.status = real_status
+        for key in ("instance", "username"):
+            window.session.state.pop(key, None)
+
     print("\n  background runner row")
     from pfpost import scheduler as sched
     panel = window.queue_panel
@@ -187,6 +251,61 @@ def main():
     panel.runner_state({"registered": True, "interval": "PT15M", "last_result": 1})
     check("a real failure code is surfaced",
           "reported code 1" in panel.runner_label.text(), panel.runner_label.text())
+
+    missing_python = r"C:\Users\x\AppData\Local\Python\pythoncore-3.14-64\pythonw.exe"
+    panel.runner_state({"registered": True, "interval": "PT30M", "last_result": 2147942402,
+                        "program": missing_python, "program_exists": False, "broken": True})
+    check("a broken task says so in words, not an error code",
+          "broken" in panel.runner_label.text()
+          and "2147942402" not in panel.runner_label.text(), panel.runner_label.text())
+    check("and names the missing program", missing_python in panel.runner_label.text())
+    check("broken is shown in the danger colour",
+          TOKENS["danger"] in panel.runner_label.styleSheet())
+    check("offers Repair", panel.runner_button.text() == "Repair background posting")
+
+    import pfpost.gui as _gui_mod
+
+    class _SyncWorker:
+        """Stands in for the QThread worker: runs at start(), emits immediately."""
+        def __init__(self, fn, *args):
+            self.fn, self.args, self._done, self._failed = fn, args, [], []
+            self.done = type("S", (), {"connect": lambda _s, f: self._done.append(f)})()
+            self.failed = type("S", (), {"connect": lambda _s, f: self._failed.append(f)})()
+
+        def start(self):
+            result = self.fn(*self.args)
+            for f in self._done:
+                f(result)
+
+    calls = []
+    real_worker, real_register = _gui_mod.Worker, _gui_mod.scheduler.register
+    real_unregister, real_refresh = _gui_mod.scheduler.unregister, panel.refresh_runner
+    real_question, real_get_int = _gui_mod.QMessageBox.question, _gui_mod.QInputDialog.getInt
+    _gui_mod.Worker = _SyncWorker
+    _gui_mod.scheduler.register = lambda minutes: calls.append(("register", minutes))
+    _gui_mod.scheduler.unregister = lambda: calls.append(("unregister",))
+    # Any prompt would block forever offscreen; record it and decline instead,
+    # so a regression into the Disable or Enable path fails rather than hangs.
+    _gui_mod.QMessageBox.question = staticmethod(
+        lambda *a, **k: (calls.append(("asked",)), _gui_mod.QMessageBox.No)[1])
+    _gui_mod.QInputDialog.getInt = staticmethod(
+        lambda *a, **k: (calls.append(("asked",)), (0, False))[1])
+    panel.refresh_runner = lambda: None
+    try:
+        panel.toggle_runner()
+    finally:
+        _gui_mod.Worker, _gui_mod.scheduler.register = real_worker, real_register
+        _gui_mod.scheduler.unregister, panel.refresh_runner = real_unregister, real_refresh
+        _gui_mod.QMessageBox.question = real_question
+        _gui_mod.QInputDialog.getInt = real_get_int
+    check("Repair re-registers in place, keeping the 30-minute interval, without asking",
+          calls == [("register", 30)], str(calls))
+
+    panel.runner_state({"registered": True, "interval": "PT15M", "last_result": 0,
+                        "program": "C:/pfpost/pfpost-gui.exe", "program_exists": True,
+                        "broken": False})
+    check("a healthy task goes back to offering Disable",
+          panel.runner_button.text() == "Disable background posting")
 
     check("nudge fires once per session, not every queue",
           window._runner_nudged is False)
@@ -592,12 +711,28 @@ def main():
           composer.post_now.property("accent") is True)
 
     # Styling ::drop-down replaces the sub-control, and Qt then draws no arrow -
-    # the visibility picker and date field end up looking like inert boxes.
-    # Strip comments first, or this matches the note explaining the rule.
+    # so the rule may only appear together with an arrow image of our own.
+    # Strip comments first, or these match the notes explaining the rules.
     import re as _re
-    rules = _re.sub(r"/\*.*?\*/", "", pftheme.stylesheet(light_tokens), flags=_re.S)
-    check("does not override the dropdown sub-control",
-          "::drop-down" not in rules)
+
+    def rules_of(tokens):
+        return _re.sub(r"/\*.*?\*/", "", pftheme.stylesheet(tokens), flags=_re.S)
+
+    check("without arrow images, the dropdown sub-control is left native",
+          "::drop-down" not in rules_of(light_tokens))
+    with_arrows = dict(light_tokens, chevron_image="C:/a.png",
+                       chevron_left_image="C:/l.png", chevron_right_image="C:/r.png")
+    styled = rules_of(with_arrows)
+    check("with arrow images, ::drop-down and its arrow are styled together",
+          "::drop-down" in styled and 'image: url("C:/a.png")' in styled)
+    check("a missing calendar arrow keeps the whole dropdown block out",
+          "::drop-down" not in rules_of(dict(with_arrows, chevron_left_image="")))
+
+    for name, t in (("light", light_tokens), ("dark", dark_tokens)):
+        for ground in ("bg", "surface", "surface_alt"):
+            ratio = contrast(t["input_border"], t[ground])
+            check("%s: dropdown and field outline on %s (%.2f:1)" % (name, ground, ratio),
+                  ratio >= 3.0, "below the 3:1 floor for control boundaries")
 
     # Stylesheet padding does not feed back into sizeHint, so widgets sized to
     # fit their text get clipped - the date field lost its final characters.
@@ -606,8 +741,9 @@ def main():
                                  ("visibility", composer.visibility, "unlisted")):
         needed = QFontMetrics(widget.font()).horizontalAdvance(sample)
         room = widget.minimumWidth() - needed
+        # 10px left padding + 30px arrow section + borders, with a little air.
         check("%s has room for its text and arrow (%dpx spare)" % (name, room),
-              room >= 30, "only %dpx spare" % room)
+              room >= 48, "only %dpx spare" % room)
 
     print("\n  gating")
     composer.set_enabled(False)
@@ -629,8 +765,38 @@ def main():
         name = "dark" if dark else "light"
         t = pftheme.tokens(dark)
         t["check_image"] = pftheme.check_image(t["primary_text"])
+        for direction, key in (("down", "chevron_image"), ("left", "chevron_left_image"),
+                               ("right", "chevron_right_image")):
+            t[key] = pftheme.chevron_image(t["text"], direction)
         _QApp.instance().setStyleSheet(pftheme.stylesheet(t))
         found = {}
+
+        def ink(widget, region=None):
+            """Pixels drawn in (nearly) the text colour: what an arrow is made of."""
+            image = widget.grab().toImage()
+            want = QColor(t["text"])
+            x0, x1 = region or (0, image.width())
+            return sum(1 for x in range(x0, x1) for y in range(image.height())
+                       if abs(image.pixelColor(x, y).red() - want.red()) < 40
+                       and abs(image.pixelColor(x, y).green() - want.green()) < 40
+                       and abs(image.pixelColor(x, y).blue() - want.blue()) < 40)
+
+        from PySide6.QtWidgets import QToolButton
+        combo = composer.visibility
+        combo.resize(combo.minimumWidth(), 34)
+        arrow_ink = ink(combo, (combo.width() - 28, combo.width() - 2))
+        # Calibrated: 8px with the arrow, 0 with its image missing, both themes.
+        check("%s: the dropdown arrow is actually drawn (%d px)" % (name, arrow_ink),
+              arrow_ink >= 5)
+        calendar = composer.when.calendarWidget()
+        calendar.resize(300, 250)
+        prev = calendar.findChild(QToolButton, "qt_calendar_prevmonth")
+        prev_ink = ink(prev) if prev else 0
+        # Calibrated: 40-44px with our chevron, 0 with Qt's black default - which
+        # is invisible on the dark bar. A looser colour match stops telling the
+        # two apart in light mode, where black is close to the text colour.
+        check("%s: the calendar's month arrow is visible (%d px)" % (name, prev_ink),
+              prev_ink >= 20)
 
         def probe(box):
             for button in box.buttons():
