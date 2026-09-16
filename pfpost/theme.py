@@ -1,62 +1,86 @@
 """Visual theme, built from Pixelfed's own palette.
 
-Colours were taken from a live instance rather than guessed:
+Colours come from gram.social's signed-in web app (its spa.css), not the older
+app.css an earlier version used - that is most of what made pfpost not feel
+like gram.social:
 
-    --primary    #2c78bf   links, buttons
-    theme-color  #10c5f8   the brand cyan
-    --dark       #212529   --light  #f8f9fa   --gray-dark  #343a40
-    danger #dc3545   success #28a745   warning #ffc107   info #17a2b8
+    light   page #f3f4f6   cards #ffffff   borders #dee2e6
+    dark    page #000000   cards #161618   raised  #212124   (pfpost: charcoal, below)
+    primary #3b82f6        brand cyan #10c5f8 (small accents only)
 
-Pixelfed ships Bootstrap, so the neutrals are Bootstrap's grey scale. The dark
-variant is derived from the same hues rather than a separate palette, so the two
-read as one design.
+Deliberate departures, each measured:
 
-Everything here is data plus one string builder; no Qt widget logic, so the
-tokens can be asserted in tests without a window.
+    primary   #2563eb  white text on #3b82f6 is 3.7:1, under 4.5
+    muted     #64748b  (light) spa.css's #94a3b8 is 2.6:1 on white
+    input_border       spa.css's field borders are ~1.2:1 - invisible, the
+                       exact complaint that prompted 1.0.4's outline fix
+
+Everything here is data, one string builder and a few pixmap helpers; no widget
+logic, so the tokens can be asserted in tests without a window.
 """
 
 from __future__ import annotations
 
 LIGHT = {
     "name": "light",
-    "accent": "#10c5f8",        # brand cyan - highlights, focus, the icon
-    "primary": "#2c78bf",       # Pixelfed's link/button blue
-    "primary_hover": "#245f98",
+    "accent": "#10c5f8",        # brand cyan - avatar, pending dots, the icon
+    "primary": "#2563eb",
+    "primary_hover": "#1d4ed8",
     "primary_text": "#ffffff",
-    "bg": "#f8f9fa",
+    "bg": "#f3f4f6",
     "surface": "#ffffff",
-    "surface_alt": "#f1f3f5",
+    "surface_alt": "#f8f9fa",
+    "seg": "#f3f4f6",           # the tab strip's track
     "border": "#dee2e6",
     "border_strong": "#ced4da",
     "input_border": "#80868c",  # >= 3.3:1 on every light ground
-    "text": "#212529",
-    "muted": "#6c757d",
-    "danger": "#dc3545",
-    "success": "#28a745",
-    "warning": "#b8860b",       # #ffc107 is unreadable on light; darkened
-    "selection": "#d5e6f5",
-    "selection_text": "#12263a",
+    "heading": "#111827",
+    "text": "#374151",
+    "muted": "#64748b",
+    "danger": "#dc2626",
+    "success": "#16a34a",
+    "warning": "#b45309",
+    "selection": "#dbeafe",
+    "selection_text": "#1e3a8a",
+    "pending_bg": "#ecfeff",
+    "pending_fg": "#0e7490",
+    "done_bg": "#f1f5f9",
+    "done_fg": "#475569",
+    "failed_bg": "#fef2f2",
+    "failed_fg": "#b91c1c",
+    "overlay": "rgba(17, 24, 39, 158)",
 }
 
 DARK = {
     "name": "dark",
     "accent": "#10c5f8",
-    "primary": "#4da3e8",       # #2c78bf is too dim on a dark ground
-    "primary_hover": "#6cb6ef",
-    "primary_text": "#08161f",
-    "bg": "#16191d",
-    "surface": "#1d2126",
-    "surface_alt": "#23282e",
-    "border": "#343a40",
-    "border_strong": "#495057",
-    "input_border": "#737b83",  # >= 3.4:1 on every dark ground
-    "text": "#e9ecef",
-    "muted": "#9aa4ae",
-    "danger": "#f1707b",        # lightened so it stays legible on dark
-    "success": "#4fc76d",
-    "warning": "#ffc107",
-    "selection": "#1e3f5a",
-    "selection_text": "#e9ecef",
+    "primary": "#2563eb",
+    "primary_hover": "#3b82f6",
+    "primary_text": "#ffffff",
+    # Charcoal rather than gram.social's pure black, which read as a hole in
+    # the screen. Cards, raised surfaces and borders step up from it together.
+    "bg": "#16171b",
+    "surface": "#1f2025",
+    "surface_alt": "#2a2b31",
+    "seg": "#2a2b31",
+    "border": "#2e3036",
+    "border_strong": "#3a3c43",
+    "input_border": "#7a7c85",  # >= 3:1 on every dark ground
+    "heading": "#e5e7eb",
+    "text": "#9ca3af",
+    "muted": "#8a8a8a",
+    "danger": "#f87171",
+    "success": "#4ade80",
+    "warning": "#fbbf24",
+    "selection": "#1e3a5f",
+    "selection_text": "#e5e7eb",
+    "pending_bg": "#0b2a31",
+    "pending_fg": "#67e8f9",
+    "done_bg": "#2a2b31",
+    "done_fg": "#9ca3af",
+    "failed_bg": "#2a1215",
+    "failed_fg": "#fca5a5",
+    "overlay": "rgba(0, 0, 0, 178)",
 }
 
 
@@ -67,49 +91,165 @@ def tokens(dark: bool) -> dict:
 def stylesheet(t: dict) -> str:
     """Qt stylesheet for the whole application."""
     return """
-QWidget {
-    background: %(bg)s;
-    color: %(text)s;
+/* No blanket QWidget background: a card's children must stay transparent on
+   the card, and an id rule strong enough to force that would also beat the
+   accent button's colour. Surfaces are painted by name instead. */
+QWidget { color: %(text)s; }
+QMainWindow, QDialog, QMessageBox, QInputDialog { background: %(bg)s; }
+QWidget#page { background: %(bg)s; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
+
+QFrame#card {
+    background: %(surface)s;
+    border: 1px solid %(border)s;
+    border-radius: 18px;
 }
-QMainWindow, QDialog { background: %(bg)s; }
+QFrame#divider { background: %(border)s; min-height: 1px; max-height: 1px; border: none; }
+
+QWidget#topBar { background: %(surface)s; border-bottom: 1px solid %(border)s; }
+QLabel#wordmark { font-size: 17px; font-weight: 700; color: %(heading)s; }
 
 QLabel { background: transparent; }
+QLabel[role="title"] { font-size: 22px; font-weight: 700; color: %(heading)s; }
+QLabel[role="label"] { font-size: 13px; font-weight: 600; color: %(heading)s; }
+QLabel[role="hint"] { font-size: 12px; color: %(muted)s; }
 QLabel[role="muted"] { color: %(muted)s; }
-QLabel[role="heading"] { font-weight: 600; font-size: 15px; }
+QLabel[role="rowTitle"] { font-size: 15px; font-weight: 600; color: %(heading)s; }
+QLabel[role="meta"] { font-size: 13px; color: %(muted)s; }
 
-QMenuBar { background: %(surface)s; border-bottom: 1px solid %(border)s; }
-QMenuBar::item { padding: 6px 10px; background: transparent; }
-QMenuBar::item:selected { background: %(surface_alt)s; color: %(primary)s; }
-QMenu { background: %(surface)s; border: 1px solid %(border)s; padding: 4px; }
-QMenu::item { padding: 6px 22px 6px 12px; border-radius: 4px; }
-QMenu::item:selected { background: %(primary)s; color: %(primary_text)s; }
-QMenu::separator { height: 1px; background: %(border)s; margin: 4px 6px; }
+QMenu {
+    background: %(surface)s;
+    border: 1px solid %(input_border)s;
+    border-radius: 14px;
+    padding: 6px;
+}
+QMenu::item { padding: 9px 22px 9px 12px; border-radius: 8px; color: %(heading)s; }
+QMenu::item:selected { background: %(surface_alt)s; color: %(heading)s; }
+QMenu::item:disabled { color: %(muted)s; }
+QMenu::separator { height: 1px; background: %(border)s; margin: 4px 8px; }
+QMenu::icon { padding-left: 8px; }
+QMenu::indicator { width: 16px; height: 16px; left: 8px; }
 
-QStatusBar { background: %(surface)s; border-top: 1px solid %(border)s; color: %(muted)s; }
-QStatusBar::item { border: none; }
-
+/* Pill buttons, as on gram.social. */
 QPushButton {
     background: %(surface)s;
-    border: 1px solid %(border_strong)s;
-    border-radius: 6px;
-    padding: 6px 14px;
-    min-height: 20px;
+    border: 1px solid %(input_border)s;
+    border-radius: 19px;
+    padding: 0 16px;
+    min-height: 38px;
+    color: %(heading)s;
+    font-weight: 600;
 }
 QPushButton:hover { background: %(surface_alt)s; border-color: %(primary)s; }
 QPushButton:pressed { background: %(selection)s; }
-QPushButton:disabled { color: %(muted)s; border-color: %(border)s; background: %(bg)s; }
-QPushButton:focus { outline: none; border-color: %(accent)s; }
+QPushButton:disabled { color: %(muted)s; border-color: %(border)s; background: %(surface)s; }
+QPushButton:focus { outline: none; border-color: %(primary)s; }
+QPushButton[size="small"] { min-height: 32px; border-radius: 16px; padding: 0 14px; }
 
 QPushButton[accent="true"] {
     background: %(primary)s;
     border: 1px solid %(primary)s;
     color: %(primary_text)s;
-    font-weight: 600;
+    font-weight: 700;
+    padding: 0 20px;
 }
 QPushButton[accent="true"]:hover { background: %(primary_hover)s; border-color: %(primary_hover)s; }
 QPushButton[accent="true"]:disabled { background: %(border)s; border-color: %(border)s; color: %(muted)s; }
 
+QPushButton[flat="true"] {
+    background: transparent; border: none; color: %(text)s; padding: 0 8px; min-height: 32px;
+}
+QPushButton[flat="true"]:hover { color: %(heading)s; background: %(surface_alt)s; }
+QPushButton[flat="true"]:disabled { color: %(muted)s; background: transparent; }
+
+/* The footer's background-posting line: reads as text, acts as a toggle. */
+QPushButton#statusLink {
+    background: transparent; border: none; padding: 0; min-height: 22px;
+    color: %(text)s; font-weight: 400; text-align: left;
+}
+QPushButton#statusLink:hover { color: %(heading)s; text-decoration: underline; }
+
 QPushButton[danger="true"]:hover { border-color: %(danger)s; color: %(danger)s; }
+
+QToolButton#iconButton {
+    background: %(surface)s;
+    border: 1px solid %(border)s;
+    border-radius: 18px;
+    min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px;
+}
+QToolButton#iconButton:hover { border-color: %(primary)s; }
+QToolButton#iconButton::menu-indicator { image: none; width: 0; }
+
+QToolButton#accountChip {
+    background: %(surface)s;
+    border: 1px solid %(border)s;
+    border-radius: 19px;
+    padding: 3px 12px 3px 4px;
+    min-height: 30px;
+    color: %(heading)s;
+    font-weight: 600;
+}
+QToolButton#accountChip:hover { border-color: %(primary)s; }
+QToolButton#accountChip::menu-indicator { image: none; width: 0; }
+
+/* Compose / Queue tabs. */
+QFrame#segmented { background: %(seg)s; border-radius: 20px; }
+QPushButton#tab {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 17px;
+    min-height: 32px;
+    padding: 0 18px;
+    color: %(text)s;
+    font-weight: 600;
+}
+QPushButton#tab:hover { color: %(heading)s; background: transparent; }
+QPushButton#tab:checked {
+    background: %(surface)s;
+    border-color: %(input_border)s;
+    color: %(heading)s;
+}
+QLabel#badge {
+    background: %(primary)s;
+    color: %(primary_text)s;
+    border-radius: 10px;
+    max-height: 20px; min-height: 20px;
+    padding: 0;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+QLabel[pill="pending"], QLabel[pill="posted"], QLabel[pill="failed"] {
+    border-radius: 11px; padding: 0 10px; font-size: 12px; font-weight: 600;
+    min-height: 22px; max-height: 22px;
+}
+QLabel[pill="pending"] { background: %(pending_bg)s; color: %(pending_fg)s; }
+QLabel[pill="posted"] { background: %(done_bg)s; color: %(done_fg)s; }
+QLabel[pill="failed"] { background: %(failed_bg)s; color: %(failed_fg)s; }
+
+QFrame#queueRow { background: transparent; border: none; border-top: 1px solid %(border)s; }
+QFrame#queueRow[first="true"] { border-top: none; }
+QLabel#thumb { background: %(surface_alt)s; border-radius: 12px; color: %(muted)s; }
+
+QPushButton#addTile {
+    min-height: 140px; max-height: 140px; min-width: 196px; max-width: 196px;
+    background: transparent;
+    border: 1px dashed %(input_border)s;
+    border-radius: 12px;
+    color: %(text)s;
+    font-weight: 600;
+    padding: 0;
+}
+QPushButton#addTile:hover { border-color: %(primary)s; color: %(heading)s; background: transparent; }
+QToolButton#tileRemove {
+    background: %(overlay)s;
+    border: none;
+    border-radius: 13px;
+    min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px;
+}
+
+QStatusBar { background: %(surface)s; border-top: 1px solid %(border)s; color: %(muted)s; }
+QStatusBar::item { border: none; }
 
 /* input_border, not border_strong: an input's outline is its only edge, and
    border_strong measured 1.3-2.2:1 against the grounds - under the 3:1 that
@@ -118,11 +258,13 @@ QPushButton[danger="true"]:hover { border-color: %(danger)s; color: %(danger)s; 
 QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QDateTimeEdit, QSpinBox {
     background: %(surface)s;
     border: 1px solid %(input_border)s;
-    border-radius: 6px;
-    padding: 5px 8px;
+    border-radius: 12px;
+    padding: 5px 10px;
+    color: %(heading)s;
     selection-background-color: %(primary)s;
     selection-color: %(primary_text)s;
 }
+QLineEdit { min-height: 24px; }
 QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover, QDateTimeEdit:hover {
     border-color: %(primary)s;
 }
@@ -134,6 +276,7 @@ QLineEdit:read-only { background: %(surface_alt)s; color: %(muted)s; }
 QLineEdit:disabled, QPlainTextEdit:disabled { color: %(muted)s; background: %(bg)s; }
 
 QComboBox, QDateTimeEdit { min-height: 22px; }
+QComboBox#visibility { border-radius: 18px; }
 QComboBox QAbstractItemView {
     background: %(surface)s;
     color: %(text)s;
@@ -157,12 +300,11 @@ QTableWidget, QTableView {
     background: %(surface)s;
     alternate-background-color: %(surface_alt)s;
     border: 1px solid %(border)s;
-    border-radius: 6px;
+    border-radius: 12px;
     gridline-color: %(border)s;
     selection-background-color: %(selection)s;
     selection-color: %(selection_text)s;
 }
-QTableWidget::item { padding: 4px 6px; }
 QHeaderView::section {
     background: %(surface_alt)s;
     color: %(muted)s;
@@ -171,13 +313,12 @@ QHeaderView::section {
     padding: 6px;
     font-weight: 600;
 }
-QTableCornerButton::section { background: %(surface_alt)s; border: none; }
 
 QProgressBar {
     background: %(surface_alt)s;
     border: none;
     border-radius: 3px;
-    height: 6px;
+    max-height: 6px;
     text-align: center;
     color: transparent;
 }
@@ -212,35 +353,43 @@ QCheckBox::indicator:checked {
 }
 QCheckBox::indicator:disabled { background: %(bg)s; border-color: %(border)s; }
 
-QSplitter::handle { background: %(border)s; height: 1px; }
 QToolTip {
-    background: %(surface)s; color: %(text)s;
-    border: 1px solid %(border_strong)s; padding: 4px 6px;
+    background: %(surface)s; color: %(heading)s;
+    border: 1px solid %(input_border)s; padding: 4px 6px;
 }
-
-#accountBar { background: %(surface)s; border-bottom: 1px solid %(border)s; }
-#sectionLabel { color: %(muted)s; font-weight: 600; }
-#dropHint { color: %(muted)s; }
 """ % dict(t, check_image=t.get("check_image", "")) + (
         DROPDOWN_RULES % t
-        if all(t.get(k) for k in ("chevron_image", "chevron_left_image",
-                                  "chevron_right_image")) else "")
+        if all(t.get(k) for k in ARROW_KEYS) else "")
+
+
+# Every generated arrow the dropdown rules name. All or nothing: a styled
+# sub-control whose image is missing draws no arrow at all.
+ARROW_KEYS = ("chevron_image", "chevron_up_image", "chevron_left_image",
+              "chevron_right_image")
+ARROW_DIRECTIONS = (("down", "chevron_image"), ("up", "chevron_up_image"),
+                    ("left", "chevron_left_image"), ("right", "chevron_right_image"))
 
 
 # Styling ::drop-down replaces the whole sub-control and Qt then draws no arrow,
 # so ::down-arrow must supply its own image. Only emitted when that image
 # exists: a drop-down rule without one leaves the control looking inert.
 DROPDOWN_RULES = """
-QComboBox, QDateTimeEdit { padding: 0 30px 0 10px; min-height: 32px; }  /* = button height */
+QComboBox, QDateTimeEdit { padding: 0 30px 0 12px; min-height: 36px; }  /* = button height */
 QComboBox::drop-down, QDateTimeEdit::drop-down {
     subcontrol-origin: padding;      /* inside the outline, which stays whole */
     subcontrol-position: top right;
     width: 30px;
     border: none;
     border-left: 1px solid %(input_border)s;
-    border-top-right-radius: 5px;
-    border-bottom-right-radius: 5px;
+    border-top-right-radius: 11px;
+    border-bottom-right-radius: 11px;
     background: %(surface_alt)s;
+}
+QComboBox#visibility::drop-down {
+    border-left: none;
+    background: transparent;
+    border-top-right-radius: 17px;
+    border-bottom-right-radius: 17px;
 }
 QComboBox::drop-down:hover, QDateTimeEdit::drop-down:hover,
 QComboBox::drop-down:on { background: %(selection)s; }
@@ -249,6 +398,32 @@ QComboBox::down-arrow, QDateTimeEdit::down-arrow {
     width: 12px;
     height: 12px;
 }
+
+/* Number fields (the background-posting interval prompt): the same divided,
+   tinted button column as a dropdown, split into up and down. */
+QSpinBox { padding: 0 32px 0 12px; min-height: 36px; }
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: padding;
+    width: 30px;
+    border: none;
+    border-left: 1px solid %(input_border)s;
+    background: %(surface_alt)s;
+}
+QSpinBox::up-button {
+    subcontrol-position: top right;
+    border-top-right-radius: 11px;
+    border-bottom: 1px solid %(border)s;
+}
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 11px;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: %(selection)s; }
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed { background: %(border_strong)s; }
+QSpinBox::up-arrow { image: url("%(chevron_up_image)s"); width: 10px; height: 10px; }
+QSpinBox::down-arrow { image: url("%(chevron_image)s"); width: 10px; height: 10px; }
+QSpinBox::up-arrow:disabled, QSpinBox::up-arrow:off,
+QSpinBox::down-arrow:disabled, QSpinBox::down-arrow:off { image: none; }
 
 /* The date field's calendar popup. */
 QCalendarWidget QWidget#qt_calendar_navigationbar {
@@ -274,7 +449,9 @@ QCalendarWidget QToolButton#qt_calendar_nextmonth {
     qproperty-iconSize: 14px;
 }
 QCalendarWidget QMenu { background: %(surface)s; }
-QCalendarWidget QSpinBox { min-height: 0; padding: 2px 4px; }
+/* The calendar's own year field: keep its compact size, narrower buttons. */
+QCalendarWidget QSpinBox { min-height: 0; padding: 2px 20px 2px 4px; }
+QCalendarWidget QSpinBox::up-button, QCalendarWidget QSpinBox::down-button { width: 18px; }
 QCalendarWidget QAbstractItemView {
     background: %(surface)s;
     color: %(text)s;
@@ -284,6 +461,101 @@ QCalendarWidget QAbstractItemView {
 }
 QCalendarWidget QAbstractItemView:disabled { color: %(muted)s; }
 """
+
+
+# --------------------------------------------------------------------------
+# icons: the same stroke paths the design mockups use, drawn by QtSvg
+# --------------------------------------------------------------------------
+
+ICON_PATHS = {
+    "globe": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.8 2.6 15.2 0 18"/><path d="M12 3c-2.6 2.8-2.6 15.2 0 18"/>',
+    "unlisted": '<path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.5"/><path d="M4 20L20 4"/>',
+    "lock": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    "calendar": '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/>',
+    "sliders": '<path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/>',
+    "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    "check": '<path d="M5 12l5 5L20 7"/>',
+    "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    "external": '<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+    "logout": '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="M10 16l-4-4 4-4"/><path d="M6 12h10"/>',
+    "login": '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="M11 16l4-4-4-4"/><path d="M4 12h11"/>',
+    "trash": '<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/>',
+    "info": '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
+    "x": '<path d="M6 6l12 12"/><path d="M18 6L6 18"/>',
+    "play": '<path d="M7 5l12 7-12 7z"/>',
+    "image": '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+    "chevron": '<path d="M6 9l6 6 6-6"/>',
+    "alert": '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
+}
+
+
+def svg_pixmap(name: str, color: str, size: int = 18, stroke: float = 1.8, ratio: float = 2.0):
+    """Render a named stroke icon to a crisp, device-pixel-ratio-aware pixmap."""
+    from PySide6.QtCore import QByteArray, Qt
+    from PySide6.QtGui import QPainter, QPixmap
+    from PySide6.QtSvg import QSvgRenderer
+
+    source = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+              'stroke="%s" stroke-width="%s" stroke-linecap="round" stroke-linejoin="round">%s</svg>'
+              % (color, stroke, ICON_PATHS[name]))
+    pixmap = QPixmap(int(size * ratio), int(size * ratio))
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    QSvgRenderer(QByteArray(source.encode("utf-8"))).render(painter)
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
+
+
+def svg_icon(name: str, color: str, size: int = 18, stroke: float = 1.8):
+    from PySide6.QtGui import QIcon
+    return QIcon(svg_pixmap(name, color, size, stroke))
+
+
+def avatar_pixmap(text: str, size: int = 30, ratio: float = 2.0):
+    """A cyan disc with the account's initial - pfpost cannot fetch the avatar
+    on a write-only token, and a generic silhouette says less."""
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
+
+    pixmap = QPixmap(int(size * ratio), int(size * ratio))
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(LIGHT["accent"]))
+    painter.drawEllipse(QRectF(0, 0, size * ratio, size * ratio))
+    font = QFont(FONT_FAMILY)
+    font.setBold(True)
+    font.setPixelSize(int(size * ratio * 0.46))
+    painter.setFont(font)
+    painter.setPen(QColor("#08161f"))
+    painter.drawText(QRectF(0, 0, size * ratio, size * ratio), Qt.AlignCenter,
+                     (text or "?")[:1].upper())
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
+
+
+def rounded_pixmap(source, width: int, height: int, radius: float = 12, ratio: float = 2.0):
+    """Crop-to-fill `source` into a rounded rectangle, as the mockups' thumbnails."""
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QPainter, QPainterPath, QPixmap
+
+    w, h = int(width * ratio), int(height * ratio)
+    scaled = source.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    x, y = (scaled.width() - w) // 2, (scaled.height() - h) // 2
+    out = QPixmap(w, h)
+    out.fill(Qt.transparent)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, w, h), radius * ratio, radius * ratio)
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, scaled, x, y, w, h)
+    painter.end()
+    out.setDevicePixelRatio(ratio)
+    return out
 
 
 def check_image(color: str) -> str:
@@ -299,6 +571,7 @@ def check_image(color: str) -> str:
 
 CHEVRONS = {
     "down": ((0.20, 0.36), (0.50, 0.66), (0.80, 0.36)),
+    "up": ((0.20, 0.64), (0.50, 0.34), (0.80, 0.64)),
     "left": ((0.62, 0.20), (0.34, 0.50), (0.62, 0.80)),
     "right": ((0.38, 0.20), (0.66, 0.50), (0.38, 0.80)),
 }
@@ -391,6 +664,9 @@ def is_dark(app) -> bool:
         return False
 
 
+# The app icon keeps the blue it shipped with; the UI palette moved on.
+ICON_BLUE = "#2c78bf"
+
 # Every size Windows asks an .exe for, across Explorer's views and DPI scales.
 ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
@@ -417,7 +693,7 @@ def draw_icon(size: int):
 
     gradient = QLinearGradient(QPointF(0, 0), QPointF(size, size))
     gradient.setColorAt(0.0, QColor(LIGHT["accent"]))
-    gradient.setColorAt(1.0, QColor(LIGHT["primary"]))
+    gradient.setColorAt(1.0, QColor(ICON_BLUE))
     painter.setBrush(QBrush(gradient))
     painter.setPen(Qt.NoPen)
     painter.drawRoundedRect(QRectF(0, 0, size, size), size * 0.22, size * 0.22)

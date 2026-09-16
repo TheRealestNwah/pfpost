@@ -102,23 +102,28 @@ def main():
                          "supported_mime_types": ["image/png"]})
 
     composer.add_paths([a, b])
-    check("two rows added", composer.table.rowCount() == 2,
-          str(composer.table.rowCount()))
+    check("two image tiles added", len(composer.tiles) == 2, str(len(composer.tiles)))
+    check("each tile shows its image, not a filename",
+          all(t.thumb.pixmap() is not None and not t.thumb.pixmap().isNull()
+              for t in composer.tiles))
+    check("the Add images tile stays last",
+          composer.strip.indexOf(composer.add_tile) == 2,
+          str(composer.strip.indexOf(composer.add_tile)))
 
-    composer.table.item(0, 2).setText("First alt")
-    composer.table.item(1, 2).setText("Second alt")
+    composer.tiles[0].alt.setText("First alt")
+    composer.tiles[1].alt.setText("Second alt")
     images = composer.images()
-    check("alt text reads back in row order",
+    check("alt text reads back in tile order",
           [i[1] for i in images] == ["First alt", "Second alt"],
           str([i[1] for i in images]))
     check("paths read back in order",
           [i[0].name for i in images] == ["a.png", "b.png"])
     check("blank alt becomes None",
-          (composer.table.item(0, 2).setText(""), composer.images()[0][1])[1] is None)
-    composer.table.item(0, 2).setText("First alt")
+          (composer.tiles[0].alt.setText("  "), composer.images()[0][1])[1] is None)
+    composer.tiles[0].alt.setText("First alt")
 
     composer.caption.setPlainText("hello")
-    check("counter shows the instance limit", "/ 500" in composer.counter.text(),
+    check("counter shows the instance limit", "5 / 500" == composer.counter.text(),
           composer.counter.text())
     composer.caption.setPlainText("x" * 501)
     check("counter flags an over-long caption",
@@ -128,70 +133,102 @@ def main():
     composer.caption.setPlainText("ok")
     check("gather accepts a valid post", composer.gather() is not None)
 
-    composer.remove_selected_all = None
-    composer.table.selectRow(0)
-    composer.remove_selected()
-    check("remove drops the selected row", composer.table.rowCount() == 1)
+    composer.tiles[0].remove_button.click()
+    check("a tile's own remove button drops that image",
+          [p.name for p, _alt in composer.images()] == ["b.png"],
+          str([p.name for p, _alt in composer.images()]))
+    check("and it leaves the layout at once, not at the next event loop",
+          composer.strip.count() == 3)          # one tile, the add tile, a stretch
+
+    check("visibility reads back as the API value, not its label",
+          composer.visibility_value() == "public"
+          and composer.visibility.currentText() == "Public")
+    composer.set_visibility("private")
+    check("visibility can be set by API value", composer.visibility_value() == "private")
+    composer.set_visibility("public")
 
     composer.clear()
-    check("clear empties table and caption",
-          composer.table.rowCount() == 0 and composer.caption.toPlainText() == "")
+    check("clear empties the images and caption",
+          composer.tiles == [] and composer.caption.toPlainText() == "")
 
     dialog = ConnectDialog(Session({}))
     check("connect dialog builds", dialog.instance is not None)
 
     window.queue_panel.reload()
-    check("queue panel reloads", window.queue_panel.table.rowCount() >= 0)
+    check("queue panel reloads", window.queue_panel.rows is not None)
 
-    print("\n  account bar")
-    bar = window.account_bar
+    print("\n  tabs")
+    bar = window.top_bar
+    check("opens on Compose", window.stack.currentWidget() is composer
+          and bar.compose_tab.isChecked())
+    bar.queue_tab.click()
+    check("the Queue tab shows the queue", window.stack.currentWidget() is window.queue_panel
+          and bar.queue_tab.isChecked() and not bar.compose_tab.isChecked())
+    check("the footer's background summary hides on the Queue tab, which has its own",
+          window.summary.isHidden())
+    window.say("")             # startup's "Not connected" message borrows the footer
+    bar.compose_tab.click()
+    check("and back", window.stack.currentWidget() is composer and not window.summary.isHidden())
 
+    bar.set_pending(2)
+    check("the Queue tab shows the pending count", not bar.badge.isHidden()
+          and bar.badge.text() == "2")
+    check("the tab's padding rule is scoped, so it cannot pad the badge's own digit",
+          bar.queue_tab.styleSheet().startswith("QPushButton#tab"),
+          bar.queue_tab.styleSheet())
+    bar.set_pending(0)
+    check("no badge when nothing is pending", bar.badge.isHidden())
+
+    print("\n  account chip")
     bar.show_state({"configured": False, "connected": False})
-    check("disconnected state is visible",
-          "Not connected" in bar.primary.text(), bar.primary.text())
-    check("disconnected offers Connect", bar.button.text() == "Connect account")
-    check("disconnected dot uses the danger token",
-          TOKENS["danger"] in bar.dot.styleSheet(), bar.dot.styleSheet())
+    check("nothing set up: one Connect account button, no chip",
+          not bar.connect_button.isHidden() and bar.chip.isHidden()
+          and bar.connect_button.text() == "Connect account")
 
     bar.show_state({"configured": True, "connected": False, "instance": "x.social"})
-    check("registered-but-unauthorized is distinguished",
-          "Not signed in" in bar.primary.text(), bar.primary.text())
-    check("unauthorized offers Sign in", bar.button.text() == "Sign in")
+    check("registered but unauthorized offers Sign in",
+          bar.connect_button.text() == "Sign in" and bar.chip.isHidden())
+    check("and says where", "x.social" in bar.connect_button.toolTip())
 
     bar.show_state({"configured": True, "connected": True, "instance": "x.social",
                     "scopes": "read write", "can_read": True, "backend": "keyring"},
                    username="morro")
-    check("connected shows the username",
-          "@morro" in bar.primary.text(), bar.primary.text())
-    check("connected dot uses the success token",
-          TOKENS["success"] in bar.dot.styleSheet(), bar.dot.styleSheet())
-    check("connected offers Disconnect", bar.button.text() == "Disconnect")
-    check("detail names the instance and backend",
-          "x.social" in bar.detail.text() and "keyring" in bar.detail.text(),
-          bar.detail.text())
+    check("connected: the chip shows only the username",
+          not bar.chip.isHidden() and bar.chip.text().strip() == "@morro"
+          and bar.connect_button.isHidden(), bar.chip.text())
+    check("the chip no longer spells out scopes or storage",
+          "scope" not in bar.chip.text() and "keyring" not in bar.chip.text())
+    check("those moved behind Connection details",
+          "x.social" in bar.details_text() and "keyring" in bar.details_text()
+          and "read write" in bar.details_text(), bar.details_text())
+    menu_texts = [a.text() for a in bar.chip_menu.actions() if not a.isSeparator()]
+    check("the chip's menu holds Open account, Connection details and Disconnect",
+          {"Open account", "Connection details", "Disconnect"} <= set(menu_texts),
+          str(menu_texts))
+    check("its header names the account and instance",
+          bar.header_action.text() == "@morro · x.social", bar.header_action.text())
 
     bar.show_state({"configured": True, "connected": True, "instance": "gram.social",
                     "scopes": "write", "can_read": False, "backend": "dpapi"},
                    username=None)
-    check("write-only falls back to the instance name",
-          "gram.social" in bar.primary.text(), bar.primary.text())
-    check("write-only explains the missing username",
-          "write-only" in bar.detail.text(), bar.detail.text())
+    check("write-only without a learned name falls back to the instance",
+          bar.chip.text().strip() == "gram.social", bar.chip.text())
+    check("details explain the missing username",
+          "write-only" in bar.details_text(), bar.details_text())
 
     print("\n  open account")
     write_only = {"configured": True, "connected": True, "instance": "gram.social",
                   "scopes": "write", "can_read": False, "backend": "keyring"}
     bar.show_state(write_only, username="nmorrow08")
     check("a learned username shows even on a write-only token",
-          "@nmorrow08" in bar.primary.text(), bar.primary.text())
-    check("and the 'unavailable' note goes away",
-          "write-only" not in bar.detail.text(), bar.detail.text())
-    check("Open account is offered once connected",
-          not bar.open_button.isHidden())
+          bar.chip.text().strip() == "@nmorrow08", bar.chip.text())
+    check("and the 'write-only' note goes away",
+          "write-only" not in bar.details_text(), bar.details_text())
+    check("Open account is offered once connected", bar.open_action.isEnabled())
     bar.show_state({"configured": True, "connected": False, "instance": "gram.social"})
-    check("but not while signed out", bar.open_button.isHidden())
+    check("but not while signed out", not bar.open_action.isEnabled())
     bar.show_state({"configured": False, "connected": False})
-    check("nor when nothing is set up", bar.open_button.isHidden())
+    check("nor when nothing is set up", not bar.open_action.isEnabled())
 
     import pfpost.gui as pfgui
     opened = []
@@ -214,8 +251,9 @@ def main():
         window.open_account()
         check("does nothing while signed out", opened == [], str(opened))
         window.session.status = lambda: dict(write_only)
-        window.account_bar.open_button.click()
-        check("the button is wired to it", len(opened) == 1, str(opened))
+        window.top_bar.show_state(write_only, "nmorrow08")    # a disabled action ignores trigger()
+        window.top_bar.open_action.trigger()
+        check("the menu item is wired to it", len(opened) == 1, str(opened))
     finally:
         pfgui.QDesktopServices.openUrl = real_open
         window.session.status = real_status
@@ -226,23 +264,53 @@ def main():
     from pfpost import scheduler as sched
     panel = window.queue_panel
 
+    summaries = []
+    panel.runner_summary.connect(lambda text, colour, dot: summaries.append((text, colour, dot)))
+
     panel.runner_state({"registered": False})
     check("off state warns what happens once pfpost is closed",
-          "close it" in panel.runner_label.text(), panel.runner_label.text())
-    check("off state is highlighted",
-          TOKENS["warning"] in panel.runner_label.styleSheet(),
-          panel.runner_label.styleSheet())
-    check("off state offers Enable",
-          panel.runner_button.text() == "Enable background posting")
+          "close pfpost" in panel.runner_label.text(), panel.runner_label.text())
+    check("off state's light is red, on the Queue tab",
+          TOKENS["danger"] in panel.runner_dot.styleSheet(), panel.runner_dot.styleSheet())
+    check("and in the Compose footer",
+          TOKENS["danger"] in window.summary_dot.styleSheet(), window.summary_dot.styleSheet())
+    check("off state offers Turn on, as the primary action",
+          panel.runner_button.text() == "Turn on"
+          and panel.runner_button.property("accent") is True)
     check("off state tracked", panel.runner_registered is False)
+    check("the Compose tab's footer hears about it too",
+          summaries and "off" in summaries[-1][0] and summaries[-1][2] == TOKENS["danger"],
+          str(summaries[-1:]))
+    check("the footer line says a click turns it on",
+          "turn on" in window.summary.toolTip(), window.summary.toolTip())
 
     panel.runner_state({"registered": True, "interval": "PT15M", "state": "Ready",
                         "last_result": 0})
-    check("on state names the interval",
-          "every 15 minutes" in panel.runner_label.text(), panel.runner_label.text())
+    check("on state is one short line, as in the mockup",
+          panel.runner_label.text() == "Background posting on · every 15 min",
+          panel.runner_label.text())
+    check("the full explanation is a tooltip away",
+          "every 15 minutes" in panel.runner_label.toolTip(), panel.runner_label.toolTip())
     check("on state is not highlighted", panel.runner_label.styleSheet() == "")
-    check("on state offers Disable",
-          panel.runner_button.text() == "Disable background posting")
+    check("on state's light is green",
+          TOKENS["success"] in window.summary_dot.styleSheet(), window.summary_dot.styleSheet())
+    check("the footer line says a click turns it off",
+          "turn off" in window.summary.toolTip(), window.summary.toolTip())
+    toggled = []
+    real_toggle = panel.toggle_runner
+    panel.toggle_runner = lambda: toggled.append(True)
+    try:
+        window.summary.click()
+    finally:
+        panel.toggle_runner = real_toggle
+    check("clicking the footer line toggles background posting "
+          "(toggle_runner asks before turning it off)", toggled == [True])
+    check("on state offers Change, not a primary button",
+          panel.runner_button.text() == "Change"
+          and panel.runner_button.property("accent") is False)
+    panel.runner_state({"registered": True, "interval": "PT2H", "last_result": 0})
+    check("hour intervals read as hours",
+          panel.runner_label.text().endswith("every 2 h"), panel.runner_label.text())
 
     # 267011 is SCHED_S_TASK_HAS_NOT_RUN - normal for a freshly created task.
     panel.runner_state({"registered": True, "interval": "PT15M", "last_result": 267011})
@@ -261,7 +329,10 @@ def main():
     check("and names the missing program", missing_python in panel.runner_label.text())
     check("broken is shown in the danger colour",
           TOKENS["danger"] in panel.runner_label.styleSheet())
-    check("offers Repair", panel.runner_button.text() == "Repair background posting")
+    check("offers Repair", panel.runner_button.text() == "Repair")
+    check("the Compose footer shortens it rather than repeating a full path",
+          window.summary.text() == "Background posting is broken - click to repair",
+          window.summary.text())
     # The label's own minimum width is what layouts impose on the window; an
     # unwrapped one is the whole sentence, path included (~1250px).
     check("a long program path wraps instead of widening the window (%dpx)"
@@ -278,9 +349,17 @@ def main():
             self.failed = type("S", (), {"connect": lambda _s, f: self._failed.append(f)})()
 
         def start(self):
-            result = self.fn(*self.args)
+            try:
+                result = self.fn(*self.args)
+            except Exception as exc:                 # as Worker.run does
+                for f in self._failed:
+                    f(str(exc))
+                return
             for f in self._done:
                 f(result)
+
+        def isRunning(self):
+            return False
 
     calls = []
     real_worker, real_register = _gui_mod.Worker, _gui_mod.scheduler.register
@@ -309,8 +388,75 @@ def main():
     panel.runner_state({"registered": True, "interval": "PT15M", "last_result": 0,
                         "program": "C:/pfpost/pfpost-gui.exe", "program_exists": True,
                         "broken": False})
-    check("a healthy task goes back to offering Disable",
-          panel.runner_button.text() == "Disable background posting")
+    check("a healthy task goes back to offering Change",
+          panel.runner_button.text() == "Change")
+
+    print("\n  footer: version and updates")
+    from pfpost import __version__ as _version
+    # Checked before any click below: the only request pfpost makes to anyone
+    # but your instance must never happen on its own.
+    check("nothing checks for updates at startup", window.update_worker is None)
+    check("the footer shows the version",
+          window.version_label.text() == "pfpost %s" % _version, window.version_label.text())
+    check("Check for updates sits beside it",
+          window.update_button.text() == "Check for updates")
+    settings_texts = [a.text() for a in window.top_bar.settings_button.menu().actions()]
+    check("and in the settings menu", "Check for updates" in settings_texts, str(settings_texts))
+
+    window.show_tab(0)
+    window.say("Queued for Fri, Sep 18 · 09:00")
+    check("a message borrows the footer's left side",
+          not window.message.isHidden() and window.summary.isHidden())
+    window.message_timer.stop()
+    window.clear_message()
+    check("and gives it back to background posting",
+          window.message.isHidden() and not window.summary.isHidden())
+
+    update_calls, opened_updates, update_questions = [], [], []
+    real = (_gui_mod.Worker, _gui_mod.updates.check, _gui_mod.QDesktopServices.openUrl,
+            _gui_mod.QMessageBox.question)
+    _gui_mod.Worker = _SyncWorker
+    _gui_mod.QDesktopServices.openUrl = lambda url: opened_updates.append(url.toString())
+    _gui_mod.QMessageBox.question = staticmethod(
+        lambda *a, **k: (update_questions.append(a[2]), _gui_mod.QMessageBox.No)[1])
+    try:
+        _gui_mod.updates.check = lambda: (update_calls.append(1), {
+            "current": "1.1.0", "latest": "1.0.4", "newer": False, "ahead": True,
+            "url": "https://github.com/TheRealestNwah/pfpost/releases"})[1]
+        window.update_button.click()
+        check("a click runs one check", update_calls == [1])
+        check("a build ahead of the release says so",
+              "newer than the latest release (1.0.4)" in window.message.text(),
+              window.message.text())
+        check("and nothing is opened or asked", opened_updates == [] and update_questions == [])
+
+        _gui_mod.updates.check = lambda: {
+            "current": "1.1.0", "latest": "1.2.0", "newer": True, "ahead": False,
+            "url": "https://github.com/TheRealestNwah/pfpost/releases/tag/v1.2.0"}
+        window.update_button.click()
+        check("a newer release is offered once, and declining opens nothing",
+              len(update_questions) == 1 and "1.2.0" in update_questions[0]
+              and opened_updates == [], str(update_questions))
+        check("the button becomes the way to it",
+              window.update_button.text() == "Update available: 1.2.0",
+              window.update_button.text())
+        window.update_button.click()
+        check("clicking it opens the release page, without checking again",
+              opened_updates == ["https://github.com/TheRealestNwah/pfpost/releases/tag/v1.2.0"]
+              and len(update_questions) == 1, str(opened_updates))
+
+        def offline():
+            raise _gui_mod.updates.UpdateError("No releases are published yet.")
+        window.update_url = None
+        _gui_mod.updates.check = offline
+        window.check_for_updates()
+        check("a failed check says why and leaves the button usable",
+              "No releases" in window.message.text() and window.update_button.isEnabled()
+              and window.update_button.text() == "Check for updates",
+              window.message.text())
+    finally:
+        (_gui_mod.Worker, _gui_mod.updates.check, _gui_mod.QDesktopServices.openUrl,
+         _gui_mod.QMessageBox.question) = real
 
     check("nudge fires once per session, not every queue",
           window._runner_nudged is False)
@@ -319,8 +465,8 @@ def main():
     from pfpost import store as pfstore
 
     composer.add_paths([a, b])
-    composer.table.item(0, 2).setText("described")
-    composer.table.item(1, 2).setText("")
+    composer.tiles[0].alt.setText("described")
+    composer.tiles[1].alt.setText("")
     check("spots images with no alt text",
           [p.name for p, alt in composer.images() if not (alt or "").strip()]
           == ["b.png"])
@@ -340,9 +486,15 @@ def main():
     composer.save_draft()
     check("draft is written to disk", pfstore.draft_path().exists())
 
-    composer.table.setRowCount(0)
+    composer.set_visibility("unlisted")
+    composer.save_draft()
+    for tile in list(composer.tiles):
+        composer.remove_tile(tile)
     composer.caption.setPlainText("")
+    composer.set_visibility("public")
     restored = composer.restore_draft()
+    check("draft restores visibility by value", composer.visibility_value() == "unlisted",
+          composer.visibility_value())
     check("draft restores both images", restored == 2, str(restored))
     check("draft restores the caption",
           composer.caption.toPlainText() == "draft caption")
@@ -355,7 +507,8 @@ def main():
     composer.add_paths([ghost])
     composer.save_draft()
     ghost.unlink()
-    composer.table.setRowCount(0)
+    for tile in list(composer.tiles):
+        composer.remove_tile(tile)
     restored = composer.restore_draft()
     check("a deleted image is skipped, not fatal", restored == 2, str(restored))
 
@@ -471,9 +624,9 @@ def main():
     check("the Options menu turns the reminder back on",
           pfstore.load_prefs()["warn_alt_text"] is True)
 
-    composer.visibility.setCurrentText("public")
+    composer.set_visibility("public")
     composer.add_paths([a])
-    composer.table.item(0, 2).setText("alt")
+    composer.tiles[0].alt.setText("alt")
     check("gather runs the link check",
           answering(EDIT, composer.gather) is None and len(seen) == 1, str(seen))
     composer.clear()
@@ -495,7 +648,57 @@ def main():
             row["status"] = "failed"
     pfq.store.save_queue(raw)
 
+    raw = pfq.store.load_queue()
+    for row in raw["items"]:
+        if row["id"] == done["id"]:
+            row["result_url"] = "https://gram.social/p/morro/1"
+        if row["id"] == bad["id"]:
+            row["error"] = "HTTP 500 from the instance"
+    pfq.store.save_queue(raw)
+    pending_counts = []
+    panel.pending_changed.connect(pending_counts.append)
     panel.reload()
+    check("one row per item", len(panel.rows) == 3, str(len(panel.rows)))
+    check("pending rows come first",
+          panel.rows[0].item["id"] == keep["id"], panel.rows[0].item["id"])
+    pills = {r.item["id"]: (r.pill.text(), r.pill.property("pill")) for r in panel.rows}
+    check("each row carries a status pill",
+          pills[keep["id"]] == ("Pending", "pending") and pills[done["id"]] == ("Posted", "posted")
+          and pills[bad["id"]] == ("Failed", "failed"), str(pills))
+    failed_row = next(r for r in panel.rows if r.item["id"] == bad["id"])
+    check("a failed row explains itself on hover",
+          "HTTP 500" in failed_row.pill.toolTip())
+    posted_row = next(r for r in panel.rows if r.item["id"] == done["id"])
+    check("a posted row offers Open post", posted_row.action.toolTip() == "Open post")
+    check("a pending row offers Remove", panel.rows[0].action.toolTip() == "Remove from queue")
+    check("only the first row drops its top rule",
+          [r.property("first") for r in panel.rows] == [True, False, False])
+    check("the subtitle tallies each status",
+          panel.subtitle.text() == "1 pending · 1 posted · 1 failed", panel.subtitle.text())
+    check("the pending count reaches the tab badge", pending_counts[-1:] == [1],
+          str(pending_counts))
+    check("the empty-state line hides when there are items", panel.empty.isHidden())
+
+    opened_posts = []
+    real_post_open = _gui_mod.QDesktopServices.openUrl
+    _gui_mod.QDesktopServices.openUrl = lambda url: opened_posts.append(url.toString())
+    try:
+        posted_row.action.click()
+        panel.open_post("javascript:alert(1)")
+    finally:
+        _gui_mod.QDesktopServices.openUrl = real_post_open
+    check("Open post opens the post, and only http(s) links",
+          opened_posts == ["https://gram.social/p/morro/1"], str(opened_posts))
+
+    old_rows = list(panel.rows)
+    panel.reload()
+    # removeWidget alone passes a layout count; the overlap seen on screen came
+    # from old rows still parented, so still painted until the event loop ran.
+    check("replaced rows are detached immediately, so they cannot paint underneath",
+          all(r.parent() is None for r in old_rows))
+    check("reloading replaces rows rather than stacking them",
+          len(panel.rows) == 3 and panel.list_layout.count() == 5,   # 3 rows, empty label, stretch
+          str(panel.list_layout.count()))
     check("clear button counts finished items",
           "(2)" in panel.clear_button.text(), panel.clear_button.text())
     check("clear button enabled when there is something to clear",
@@ -520,8 +723,23 @@ def main():
 
     second = pfq.add([(a, "alt")], "another", "public",
                      _dt.now(_tz.utc) + _td(days=2))
+    real_ask = _gui_mod.QMessageBox.question
+    asked = []
+    _gui_mod.QMessageBox.question = staticmethod(
+        lambda *a, **k: (asked.append(a[2] if len(a) > 2 else ""), _gui_mod.QMessageBox.No)[1])
+    try:
+        panel.reload()
+        next(r for r in panel.rows if r.item["id"] == second["id"]).action.click()
+    finally:
+        _gui_mod.QMessageBox.question = real_ask
+    check("removing a pending post asks first, naming it",
+          len(asked) == 1 and "another" in asked[0], str(asked))
+    check("and declining keeps it",
+          second["id"] in [i["id"] for i in pfq.items(include_done=True)])
     check("remove_many drops several at once",
           pfq.remove_many([keep["id"], second["id"]]) == 2)
+    panel.reload()
+    check("an empty queue says so", not panel.empty.isHidden() and panel.rows == [])
     check("remove_many ignores unknown ids", pfq.remove_many(["nope"]) == 0)
     check("remove_many on nothing is a no-op", pfq.remove_many([]) == 0)
     check("counts tally by status", pfq.counts()["pending"] == 0)
@@ -588,38 +806,12 @@ def main():
     check("disabled buttons say why", "did not return" in missing.open_button.toolTip())
 
     print("\n  theme")
-    # setStyleSheet() emits PaletteChange on a real platform, so an unguarded
-    # changeEvent handler recurses until the interpreter dies. The offscreen
-    # platform does NOT emit it, so the loop cannot be reproduced here - these
-    # checks verify the guard's contract, which is what actually breaks it.
     dark_tokens = pftheme.tokens(dark=True)
     light_tokens = pftheme.tokens(dark=False)
 
-    bar.set_tokens(dark_tokens)
-    check("applies the given tokens",
-          bar._applied_colour == dark_tokens["muted"], str(bar._applied_colour))
-    before = bar._applied_colour
-    bar.apply_theme()
-    check("re-applying unchanged tokens is a no-op", bar._applied_colour == before)
-
-    bar.set_tokens(light_tokens)
-    check("follows a token swap", bar._applied_colour == light_tokens["muted"])
-
-    # Force a mismatch, or the equality short-circuit returns before the guard
-    # is reached - which made an earlier version of this check pass even with
-    # the guard deleted.
-    sentinel = "#000000"
-    bar._applied_colour = sentinel
-    bar._applying = True
-    bar.apply_theme()
-    check("nested call is refused while restyling",
-          bar._applied_colour == sentinel,
-          "guard let a re-entrant call through: %s" % bar._applied_colour)
-    bar._applying = False
-    bar.apply_theme()
-    check("restyles once the guard clears",
-          bar._applied_colour == light_tokens["muted"])
-
+    # The old account bar restyled itself on PaletteChange and needed a
+    # re-entrancy guard. The top bar has no such handler; make sure one did
+    # not creep back in unguarded.
     survived = True
     try:
         for _ in range(4):
@@ -627,6 +819,10 @@ def main():
     except RecursionError:
         survived = False
     check("repeated PaletteChange events stay stable", survived)
+    bar.set_tokens(dark_tokens)
+    check("token swaps redraw the chip's menu icons without error",
+          not bar.disconnect_action.icon().isNull())
+    bar.set_tokens(light_tokens)
 
     print("\n  palette contrast")
 
@@ -664,7 +860,15 @@ def main():
 
     sheet = pftheme.stylesheet(dark_tokens)
     check("stylesheet substitutes every token", "%(" not in sheet)
-    check("stylesheet styles the account bar", "#accountBar" in sheet)
+    check("stylesheet styles the top bar and its chip",
+          "#topBar" in sheet and "#accountChip" in sheet)
+    for role in ("card", "segmented", "badge", "queueRow", "addTile"):
+        check("stylesheet styles %s" % role, "#%s" % role in sheet)
+    check("gram.social's signed-in palette is the ground",
+          light_tokens["bg"] == "#f3f4f6" and dark_tokens["bg"] == "#16171b"
+          and dark_tokens["surface"] == "#1f2025")
+    check("the app icon keeps its shipped blue, independent of the UI palette",
+          pftheme.ICON_BLUE == "#2c78bf")
     check("stylesheet defines an accent button",
           'QPushButton[accent="true"]' in sheet)
 
@@ -726,12 +930,24 @@ def main():
     check("without arrow images, the dropdown sub-control is left native",
           "::drop-down" not in rules_of(light_tokens))
     with_arrows = dict(light_tokens, chevron_image="C:/a.png",
-                       chevron_left_image="C:/l.png", chevron_right_image="C:/r.png")
+                       chevron_up_image="C:/u.png", chevron_left_image="C:/l.png",
+                       chevron_right_image="C:/r.png")
     styled = rules_of(with_arrows)
     check("with arrow images, ::drop-down and its arrow are styled together",
           "::drop-down" in styled and 'image: url("C:/a.png")' in styled)
     check("a missing calendar arrow keeps the whole dropdown block out",
           "::drop-down" not in rules_of(dict(with_arrows, chevron_left_image="")))
+    check("number fields get the same themed arrows, up and down",
+          'QSpinBox::up-arrow { image: url("C:/u.png")' in styled
+          and 'QSpinBox::down-arrow { image: url("C:/a.png")' in styled)
+    check("and fall back to native arrows together with the rest",
+          "QSpinBox::up-button" not in rules_of(dict(with_arrows, chevron_up_image="")))
+    up = QImage(pftheme.chevron_image("#123456", "up"))
+    down = QImage(pftheme.chevron_image("#123456", "down"))
+    # Apex pixels on the 64px drawing: up peaks near y=22, down bottoms near y=42.
+    check("the up chevron points up and the down one down",
+          up.pixelColor(32, 22).alpha() > 0 and up.pixelColor(32, 42).alpha() == 0
+          and down.pixelColor(32, 42).alpha() > 0 and down.pixelColor(32, 22).alpha() == 0)
 
     for name, t in (("light", light_tokens), ("dark", dark_tokens)):
         for ground in ("bg", "surface", "surface_alt"):
@@ -742,8 +958,8 @@ def main():
     # Stylesheet padding does not feed back into sizeHint, so widgets sized to
     # fit their text get clipped - the date field lost its final characters.
     from PySide6.QtGui import QFontMetrics
-    for name, widget, sample in (("date field", composer.when, "2026-09-08 21:50"),
-                                 ("visibility", composer.visibility, "unlisted")):
+    for name, widget, sample in (("date field", composer.when, "Sep 28, 2026 · 21:50"),
+                                 ("visibility", composer.visibility, "Followers only")):
         needed = QFontMetrics(widget.font()).horizontalAdvance(sample)
         room = widget.minimumWidth() - needed
         # 10px left padding + 30px arrow section + borders, with a little air.
@@ -770,8 +986,7 @@ def main():
         name = "dark" if dark else "light"
         t = pftheme.tokens(dark)
         t["check_image"] = pftheme.check_image(t["primary_text"])
-        for direction, key in (("down", "chevron_image"), ("left", "chevron_left_image"),
-                               ("right", "chevron_right_image")):
+        for direction, key in pftheme.ARROW_DIRECTIONS:
             t[key] = pftheme.chevron_image(t["text"], direction)
         _QApp.instance().setStyleSheet(pftheme.stylesheet(t))
         found = {}

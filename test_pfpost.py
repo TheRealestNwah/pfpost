@@ -640,6 +640,85 @@ def main():
     check("runner asks for `queue run`", arguments.endswith("queue run"), arguments)
     check("runner has a working directory", Path(workdir).is_dir(), workdir)
 
+    print("\n12. update check (GitHub is faked; nothing leaves the machine)")
+    from pfpost import updates, __version__
+    for text, parsed in (("1.0.4", (1, 0, 4)), ("v1.1.0", (1, 1, 0)), ("2", (2, 0, 0)),
+                         ("1.2", (1, 2, 0)), ("1.1.0-dev", (1, 1, 0))):
+        check("parses %r" % text, updates.parse_version(text) == parsed,
+              str(updates.parse_version(text)))
+    check("compares numerically, not as text: 1.10 > 1.9",
+          updates.is_newer("1.10.0", "1.9.0"))
+    check("an equal version is not newer", not updates.is_newer("v1.1.0", "1.1.0"))
+    try:
+        updates.parse_version("latest")
+        check("rejects a non-version", False)
+    except updates.UpdateError:
+        check("rejects a non-version", True)
+
+    requests = []
+    reply = [200, b""]
+
+    def fake_http(method, url, **kw):
+        requests.append((method, url, kw))
+        return reply[0], reply[1]
+
+    real_http = api.http
+    api.http = fake_http
+    try:
+        reply[:] = [200, json.dumps({"tag_name": "v9.0.0", "html_url":
+                    "https://github.com/TheRealestNwah/pfpost/releases/tag/v9.0.0"}).encode()]
+        info = updates.check("1.1.0")
+        check("finds a newer release", info["newer"] and info["latest"] == "9.0.0", str(info))
+        check("links to that release",
+              info["url"].endswith("/releases/tag/v9.0.0"), info["url"])
+        check("asks GitHub's public releases API, and nothing else",
+              [(m, u) for m, u, _kw in requests] == [("GET", updates.LATEST_API)])
+        check("sends no token or body", all("token" not in kw and "data" not in kw
+                                            for _m, _u, kw in requests))
+        check("says a newer one is available",
+              updates.describe(info) == "pfpost 9.0.0 is available (you have 1.1.0).")
+
+        reply[1] = json.dumps({"tag_name": "v1.1.0", "html_url": "x"}).encode()
+        info = updates.check("1.1.0")
+        check("same version: up to date", not info["newer"] and not info["ahead"])
+        check("says so", updates.describe(info) == "pfpost 1.1.0 is the latest version.")
+        check("a link that is not this repo's release page is replaced",
+              info["url"] == updates.RELEASES_PAGE, info["url"])
+
+        reply[1] = json.dumps({"tag_name": "v1.0.4",
+                               "html_url": "https://evil.example/releases/"}).encode()
+        info = updates.check("1.1.0")
+        check("a local build ahead of the release says so, not 'latest'",
+              updates.describe(info)
+              == "pfpost 1.1.0 is newer than the latest release (1.0.4).",
+              updates.describe(info))
+        check("a foreign link never reaches the browser", info["url"] == updates.RELEASES_PAGE)
+
+        for status, body, expect in ((404, b"", "No releases"), (403, b"", "rate-limiting"),
+                                     (500, b"", "HTTP 500"), (200, b"<html>", "not a release"),
+                                     (200, b'{"name": "x"}', "not a release")):
+            reply[:] = [status, body]
+            try:
+                updates.check("1.1.0")
+                check("HTTP %d %r is reported, not raised raw" % (status, body[:8]), False)
+            except updates.UpdateError as exc:
+                check("HTTP %d %r explains itself" % (status, body[:8]), expect in str(exc),
+                      str(exc))
+    finally:
+        api.http = real_http
+
+    import contextlib
+    import io
+    from pfpost import cli as pfcli
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            pfcli.main(["--version"])
+    except SystemExit:
+        pass
+    check("pfpost --version prints the version",
+          out.getvalue().strip() == "pfpost %s" % __version__, out.getvalue())
+
     server.shutdown()
     print("\n%s" % ("All checks passed." if not FAILURES[0]
                     else "%d CHECK(S) FAILED." % FAILURES[0]))

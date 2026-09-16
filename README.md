@@ -146,10 +146,12 @@ Both frontends drive the same core, so anything the CLI can do the GUI can too.
 pfpost-gui.exe
 ```
 
-Drag images onto the window, edit alt text inline per image, write a caption
-against a live character counter, then post immediately or add it to the queue
-with a date picker. The queue table below shows pending, posted and failed
-items; hover a failed row to see the error.
+Two tabs across the top. **Compose** holds the new post: drop images onto it or
+use **Add images**, give each image its alt text under its thumbnail, write a
+caption against a live character counter, pick who sees it, then **Post now**
+or pick a time and **Add to queue**. **Queue** lists what's pending (soonest
+first) and what's been posted, each with a status pill; hover a failed item to
+see the error. The tab shows how many posts are pending.
 
 After a successful post a dialog shows the link with **Copy link** and **Open in
 browser** buttons; it stays open until you close it, so you can do both.
@@ -159,13 +161,24 @@ an upload. If no account is connected the connect dialog opens on launch: enter
 your instance, and it registers the client and runs the browser authorization
 for you.
 
-A bar across the top always shows whether an account is connected — green with
-your `@name`, amber when a client is registered but not yet authorized, red when
-there is nothing set up. Posting is disabled until you connect, so the window
-never looks usable when it isn't.
+The top right always shows the account: a chip with your `@name` when
+connected, or a **Connect account** / **Sign in** button when not. Posting is
+disabled until you connect, so the window never looks usable when it isn't. The
+chip's menu has **Open account**, **Connection details** (instance, scopes,
+where secrets are stored, token expiry) and **Disconnect**; the settings button
+beside it holds the warning toggles.
 
-**Open account** (in that bar, and under the Account menu) opens your profile in
-the browser. A write-only token can't ask the server who you are, so pfpost
+The line under the tabs shows whether background posting is on, the version
+you're running, and **Check for updates**. That check asks GitHub for the
+latest release only when you click it; if there's a newer one, the button
+becomes a link to its download page. From the command line:
+
+```
+pfpost.exe --version
+pfpost.exe check-update
+```
+
+**Open account** opens your profile in the browser. A write-only token can't ask the server who you are, so pfpost
 learns your username from the reply to your first post; until then it opens
 `/i/me`, which Pixelfed redirects to your profile if you're signed in on the web.
 
@@ -173,19 +186,22 @@ Needs `PySide6`. The CLI works without it.
 
 ### Theme
 
-The interface uses Pixelfed's own palette, read from a live instance rather than
-guessed:
+The interface follows gram.social's signed-in web app — its `spa.css`, read from
+the live site rather than guessed: grey page and white cards in light mode,
+charcoal (`#16171b`) with `#1f2025` cards in dark, pill-shaped buttons, 18px card
+corners, and
+the brand cyan `#10c5f8` for small accents. Light and dark follow the desktop
+setting.
 
-| Token | Value | Where it comes from |
-|---|---|---|
-| accent | `#10c5f8` | the instance's `theme-color` — the brand cyan |
-| primary | `#2c78bf` | Pixelfed's `--primary`, its link and button blue |
-| neutrals | `#212529` … `#f8f9fa` | Bootstrap's grey scale, which Pixelfed ships |
+A few values differ from the site on purpose, each because the original fails a
+contrast check:
 
-Light and dark variants follow the desktop setting, and the dark palette is
-derived from the same hues rather than being a separate design. The dark
-variant lightens `primary` to `#4da3e8` and `danger` to `#f1707b`, because the
-light-mode values fall under the contrast floor on a dark ground.
+| Token | pfpost | gram.social | Why |
+|---|---|---|---|
+| primary | `#2563eb` | `#3b82f6` | white button text on `#3b82f6` is 3.7:1, under 4.5 |
+| muted (light) | `#64748b` | `#94a3b8` | `#94a3b8` is 2.6:1 on white |
+| input borders | `#80868c` / `#7a7c85` | `#e2e8f0` / `#161618` | the site's field outlines are nearly invisible |
+| dark page | `#16171b` | `#000000` | pure black read as a hole in the screen |
 
 Contrast is asserted, not eyeballed: `test_gui.py` computes WCAG relative
 luminance for every text and status colour against both backgrounds in both
@@ -198,8 +214,9 @@ is bundled (`pfpost/fonts/`) because Windows doesn't ship it, and falls back to
 Segoe UI if it can't load. Dropdown and calendar arrows are drawn by the app, in
 the theme's text colour, so they stay visible in dark mode.
 
-The app icon is drawn at runtime from the same two brand colours, so there is no
-binary asset to keep in sync.
+Interface icons are the same stroke paths as the design mockups, drawn at runtime.
+The app icon is drawn at runtime too (it keeps its original `#2c78bf` blue), so
+there is no binary asset to keep in sync.
 
 ## Checking and clearing the connection
 
@@ -211,7 +228,8 @@ pfpost.exe logout --keep-client
 
 `whoami` reports connection state whatever it is, including when the token has
 no `read` scope and the account name cannot be fetched. In the GUI the same is
-in the account bar, and **Account > Disconnect** offers the two options:
+under the account chip's **Connection details**, and its **Disconnect** offers
+the two options:
 
 - **Sign out, keep client** — drops the token, keeps the registration, so
   signing back in is one browser trip.
@@ -273,11 +291,11 @@ pfpost.exe queue list --all
 pfpost.exe queue remove abc12345
 ```
 
-In the desktop app the queue table has **Clear posted**, which drops everything
+In the desktop app the Queue tab has **Clear posted**, which drops everything
 finished (posted and failed) and shows how many that is. Pending posts are never
-touched by it — cancelling a scheduled post is deliberate, so that is what
-**Remove selected** is for, and it warns before cancelling anything still
-pending.
+touched by it — cancelling a scheduled post is deliberate, so that is what each
+row's remove button is for, and it asks before cancelling anything still
+pending. Posted rows have an **Open post** button instead.
 
 Publish everything due:
 
@@ -289,14 +307,14 @@ pfpost.exe queue run
 desktop app is open it checks every minute, so due posts go out without you
 clicking anything. The scheduled task below is what covers pfpost being closed —
 its interval is the worst-case delay in that case, not while the app is running.
-In the desktop app, the row under the queue table says whether background
-posting is on and turns it on for you; queue something with it off and pfpost
+In the desktop app, the line at the bottom of the Queue tab says whether
+background posting is on, with **Turn on** or **Change** (interval, or turn off); queue something with it off and pfpost
 offers to enable it rather than letting the post sit there silently.
 
 The task runs a specific program: `pfpost-gui.exe` from wherever you enabled it,
 or, from source, that environment's `pythonw.exe`. If that program disappears —
 the folder moved, or the Python it used was uninstalled — Windows quietly fails
-every run with code `0x80070002`. The row detects this, says **Background posting
+every run with code `0x80070002`. That line detects this, says **Background posting
 is broken**, and offers **Repair**, which points the task at the copy of pfpost
 you're running and keeps your interval.
 
@@ -330,8 +348,8 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
   add it later. The desktop app offers to jump to the empty field; the CLI
   prints a note to stderr rather than blocking, so scripts and scheduled runs
   are unaffected. If you've decided not to add alt text, tick *Don't ask me
-  about alt text again* in the prompt, or untick **Options → Ask about missing
-  alt text**; that silences the CLI note too.
+  about alt text again* in the prompt, or untick **Ask about missing alt text** under
+  the settings button; that silences the CLI note too.
 - **Links in public captions are flagged too.** Pixelfed's spam filter
   (`Bouncer`) turns a public post unlisted, after it has been accepted, when the
   caption contains `https://`, `www.`, `.com`, `.net`, `.org` and similar, on
@@ -339,7 +357,7 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
   succeeds and the API reply still says public, so the first sign is usually
   noticing it missing from your profile. pfpost can't see your account age or
   follower count with a write-only token, so it warns on the caption alone.
-  Turn it off with the checkbox in the warning or under **Options**.
+  Turn it off with the checkbox in the warning or under the settings button.
 - **An unsent composer is restored.** Close the window with images staged and a
   caption written, and it comes back next launch. Images deleted in the
   meantime are skipped rather than failing the restore.
@@ -424,8 +442,10 @@ Anthropic's Claude Opus 5 model.
   were AI-written.
 
 **The app itself contains no AI.** It sends nothing to Anthropic or any other AI
-service. The only network traffic is to the Pixelfed instance you connect, plus
-a `localhost` listener that receives the sign-in redirect.
+service. Its network traffic is to the Pixelfed instance you connect, a
+`localhost` listener that receives the sign-in redirect, and — only when you
+click **Check for updates** or run `pfpost check-update` — one anonymous request
+to GitHub's public releases API. Nothing checks for updates on its own.
 
 As with any small open-source project, read the code before trusting it with an
 account. `pfpost/store.py` and `pfpost/session.py` are the parts that handle

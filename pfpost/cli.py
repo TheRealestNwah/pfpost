@@ -8,7 +8,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from . import api, queue as pfqueue, scheduler as pfscheduler, store
+from . import __version__, api, queue as pfqueue, scheduler as pfscheduler, store, updates
 from .session import AuthError, DEFAULT_PORT, Session
 
 VISIBILITIES = ["public", "unlisted", "private"]
@@ -337,6 +337,16 @@ def cmd_gui(args):
 
 # --------------------------------------------------------------------------
 
+def cmd_check_update(args):
+    try:
+        info = updates.check()
+    except (updates.UpdateError, api.ApiError) as exc:
+        die("Could not check for updates: %s" % exc)
+    print(updates.describe(info))
+    if info["newer"]:
+        print("Download: %s" % info["url"])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pfpost",
@@ -353,7 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
               pfpost queue run
               pfpost schedule
             """))
+    parser.add_argument("--version", action="version", version="pfpost %s" % __version__)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    upd = sub.add_parser("check-update", help="ask GitHub whether a newer release exists")
+    upd.set_defaults(func=cmd_check_update)
 
     reg = sub.add_parser("register", help="register an OAuth client via /api/v1/apps")
     reg.add_argument("--instance", help="instance domain, e.g. pixelfed.social")
