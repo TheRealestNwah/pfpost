@@ -714,6 +714,9 @@ class QueuePanel(QWidget):
 
         # Queued posts publish only when something runs the queue. Say so.
         self.runner_label = QLabel("Checking background posting ...")
+        # Wrap: the broken-task message carries a full program path, and an
+        # unwrapped label forces its minimum width onto the whole window.
+        self.runner_label.setWordWrap(True)
         self.runner_button = QPushButton("Enable background posting")
         self.runner_button.clicked.connect(self.toggle_runner)
         self.runner_button.setEnabled(False)

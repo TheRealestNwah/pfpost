@@ -262,6 +262,11 @@ def main():
     check("broken is shown in the danger colour",
           TOKENS["danger"] in panel.runner_label.styleSheet())
     check("offers Repair", panel.runner_button.text() == "Repair background posting")
+    # The label's own minimum width is what layouts impose on the window; an
+    # unwrapped one is the whole sentence, path included (~1250px).
+    check("a long program path wraps instead of widening the window (%dpx)"
+          % panel.runner_label.minimumSizeHint().width(),
+          panel.runner_label.minimumSizeHint().width() < 600)
 
     import pfpost.gui as _gui_mod
 
