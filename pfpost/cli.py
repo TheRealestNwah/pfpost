@@ -178,7 +178,7 @@ def cmd_post(args):
         return
 
     missing_alt = [p.name for p, alt in images if not (alt or "").strip()]
-    if missing_alt:
+    if missing_alt and store.load_prefs()["warn_alt_text"]:
         # Not a prompt: scripts and scheduled runs must not block on stdin.
         print("Note: no alt text for %s. Pixelfed cannot add it after posting."
               % ", ".join(missing_alt), file=sys.stderr)

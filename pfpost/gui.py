@@ -500,7 +500,7 @@ class Composer(QWidget):
     def confirm_alt_text(self, images) -> bool:
         """Alt text cannot be added after posting, so ask before, not never."""
         missing = [path.name for path, alt in images if not (alt or "").strip()]
-        if not missing:
+        if not missing or not store.load_prefs()["warn_alt_text"]:
             return True
         box = QMessageBox(self)
         box.setWindowTitle("No alt text")
@@ -516,7 +516,11 @@ class Composer(QWidget):
         mark_accent(add)
         box.addButton("Post without it", QMessageBox.AcceptRole)
         box.setDefaultButton(add)
+        mute = QCheckBox("Don't ask me about alt text again")
+        box.setCheckBox(mute)
         box.exec()
+        if mute.isChecked():
+            store.set_pref("warn_alt_text", False)
         if box.clickedButton() is add:
             for row in range(self.table.rowCount()):
                 item = self.table.item(row, 2)
@@ -927,7 +931,12 @@ class MainWindow(QMainWindow):
         self.warn_links_action.setCheckable(True)
         self.warn_links_action.toggled.connect(
             lambda on: store.set_pref("warn_links", on))
+        self.warn_alt_action = QAction("Ask about missing alt text", self)
+        self.warn_alt_action.setCheckable(True)
+        self.warn_alt_action.toggled.connect(
+            lambda on: store.set_pref("warn_alt_text", on))
         options = self.menuBar().addMenu("Options")
+        options.addAction(self.warn_alt_action)
         options.addAction(self.warn_links_action)
         options.aboutToShow.connect(self.sync_options)
         self.sync_options()
@@ -947,9 +956,12 @@ class MainWindow(QMainWindow):
 
     def sync_options(self):
         """Read prefs from disk - the warning dialog can change them too."""
-        self.warn_links_action.blockSignals(True)
-        self.warn_links_action.setChecked(store.load_prefs()["warn_links"])
-        self.warn_links_action.blockSignals(False)
+        prefs = store.load_prefs()
+        for action, key in ((self.warn_alt_action, "warn_alt_text"),
+                            (self.warn_links_action, "warn_links")):
+            action.blockSignals(True)
+            action.setChecked(prefs[key])
+            action.blockSignals(False)
 
     def say(self, message: str):
         self.statusBar().showMessage(message, 12000)

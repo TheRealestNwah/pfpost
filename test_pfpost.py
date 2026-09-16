@@ -242,6 +242,13 @@ def main():
                                "www.", ".com", ".net", ".org"))
 
     check("warning is on by default", store.load_prefs()["warn_links"] is True)
+    check("alt text reminder is on by default",
+          store.load_prefs()["warn_alt_text"] is True)
+    store.prefs_path().write_text('{"warn_links": false}', encoding="utf-8")
+    check("a prefs file from 1.0.1 gains the new key, switched on",
+          store.load_prefs() == {"warn_links": False, "warn_alt_text": True},
+          str(store.load_prefs()))
+    store.prefs_path().unlink()
     store.set_pref("warn_links", False)
     check("preference persists", store.load_prefs()["warn_links"] is False)
     store.prefs_path().write_text("{not json", encoding="utf-8")

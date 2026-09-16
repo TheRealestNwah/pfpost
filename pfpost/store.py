@@ -286,7 +286,7 @@ def clear_draft() -> None:
         pass
 
 
-PREF_DEFAULTS = {"warn_links": True}
+PREF_DEFAULTS = {"warn_links": True, "warn_alt_text": True}
 
 
 def load_prefs() -> dict:

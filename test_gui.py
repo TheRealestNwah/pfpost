@@ -1,8 +1,8 @@
-"""GUI smoke test. Run: python test_gui.py
+"""GUI smoke test. Run: .venv\\Scripts\\python.exe test_gui.py
 
 Builds the real widgets on Qt's offscreen platform, so it works headless and in
-CI. Covers construction and the data path between the table and a post payload -
-not appearance.
+CI. Covers construction, the data path between the table and a post payload,
+the pre-post dialogs, and rendered pixels where a style rule can be ignored.
 """
 import os
 import sys
@@ -16,9 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from PySide6.QtWidgets import QApplication
 except ImportError:
-    print("PySide6 is not installed - skipping GUI tests.")
-    print("Install it with:  pip install PySide6")
-    sys.exit(0)
+    # A failure, not a skip. Exiting 0 here once let a run on the wrong Python
+    # report success having tested nothing. Opt out explicitly if you mean it.
+    print("PySide6 is not installed for %s - no GUI tests ran." % sys.executable)
+    print("Use the project environment:  .venv\\Scripts\\python.exe test_gui.py")
+    if os.environ.get("PFPOST_SKIP_GUI_TESTS") == "1":
+        print("PFPOST_SKIP_GUI_TESTS=1, so exiting 0 anyway.")
+        sys.exit(0)
+    sys.exit(2)
 
 def make_png(size: int = 8) -> bytes:
     """A real, valid greyscale PNG so Qt can actually decode a thumbnail."""
@@ -315,6 +320,32 @@ def main():
           window.warn_links_action.isChecked() is False)
     window.warn_links_action.setChecked(True)
     check("the Options menu turns it back on", pfstore.load_prefs()["warn_links"] is True)
+
+    print("\n  alt text reminder can be turned off")
+    POST_ANYWAY = "Post without it"
+    undescribed = [(a, None)]
+    check("alt text reminder is on by default",
+          pfstore.load_prefs()["warn_alt_text"] is True)
+    check("reminder still asks before it is muted",
+          answering(POST_ANYWAY, lambda: composer.confirm_alt_text(undescribed))
+          is True and len(seen) == 1, str(seen))
+    check("posting anyway without the box ticked keeps asking",
+          pfstore.load_prefs()["warn_alt_text"] is True)
+    answering(POST_ANYWAY, lambda: composer.confirm_alt_text(undescribed), mute=True)
+    check("the checkbox turns the reminder off",
+          pfstore.load_prefs()["warn_alt_text"] is False)
+    check("once muted, missing alt text posts with no dialog",
+          answering(POST_ANYWAY, lambda: composer.confirm_alt_text(undescribed))
+          is True and not seen, str(seen))
+    check("muting alt text leaves the link warning alone",
+          pfstore.load_prefs()["warn_links"] is True)
+    window.sync_options()
+    check("the Options menu reflects the alt text mute",
+          window.warn_alt_action.isChecked() is False
+          and window.warn_links_action.isChecked() is True)
+    window.warn_alt_action.setChecked(True)
+    check("the Options menu turns the reminder back on",
+          pfstore.load_prefs()["warn_alt_text"] is True)
 
     composer.visibility.setCurrentText("public")
     composer.add_paths([a])
@@ -643,4 +674,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    # os._exit, not sys.exit: interpreter teardown destroys the suite's many
+    # leftover Qt objects out of order and dies with 0xC0000409, turning a
+    # passing run into a failing exit code. Results are already printed.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

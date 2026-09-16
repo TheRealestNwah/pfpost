@@ -39,12 +39,19 @@ Prebuilt Windows executables need no Python at all:
 Keep both in the same folder — enabling background posting looks for its sibling
 so the task runs without flashing a console window.
 
-To build them yourself, or to run from source:
+To build them yourself, or to run from source, use a virtual environment in
+the project folder. It keeps pfpost's packages with the project, so installing,
+upgrading or replacing your system Python can't break it:
 
 ```
-pip install -r requirements.txt
-python build.py
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+.venv\Scripts\python.exe build.py
 ```
+
+Run the app and tests the same way, e.g. `.venv\Scripts\python.exe pfpost.py gui`.
+There's no need to activate the environment. If your Python version changes,
+delete `.venv` and run the first two lines again.
 
 `keyring` is strongly recommended — without it pfpost falls back to Windows
 DPAPI, and on other platforms it will refuse to store credentials rather than
@@ -52,9 +59,13 @@ write them somewhere insecure. `PySide6` is only needed for the GUI.
 
 ## Setup
 
+Examples below use the downloaded executables. From source, use
+`.venv\Scripts\python.exe pfpost.py` in place of `pfpost.exe`, and
+`.venv\Scripts\python.exe pfpost.py gui` in place of `pfpost-gui.exe`.
+
 ```
-python pfpost.py register --instance your.instance
-python pfpost.py auth
+pfpost.exe register --instance your.instance
+pfpost.exe auth
 ```
 
 `register` hits `/api/v1/apps`, which needs no authentication and returns the
@@ -132,7 +143,7 @@ Both frontends drive the same core, so anything the CLI can do the GUI can too.
 ## Desktop app
 
 ```
-python pfpost.py gui
+pfpost-gui.exe
 ```
 
 Drag images onto the window, edit alt text inline per image, write a caption
@@ -181,9 +192,9 @@ binary asset to keep in sync.
 ## Checking and clearing the connection
 
 ```
-python pfpost.py whoami
-python pfpost.py logout
-python pfpost.py logout --keep-client
+pfpost.exe whoami
+pfpost.exe logout
+pfpost.exe logout --keep-client
 ```
 
 `whoami` reports connection state whatever it is, including when the token has
@@ -202,19 +213,19 @@ dialog say so and link there rather than implying a full sign-out.
 ## Posting
 
 ```
-python pfpost.py post photo.jpg --caption "Morning fog" --alt "Fog over a valley at dawn"
+pfpost.exe post photo.jpg --caption "Morning fog" --alt "Fog over a valley at dawn"
 ```
 
 Multiple images, one alt each, in order:
 
 ```
-python pfpost.py post a.jpg b.jpg --caption "Two views" --alt "First" --alt "Second"
+pfpost.exe post a.jpg b.jpg --caption "Two views" --alt "First" --alt "Second"
 ```
 
 One alt applied to every image:
 
 ```
-python pfpost.py post a.jpg b.jpg --caption "Series" --alt "Untitled study"
+pfpost.exe post a.jpg b.jpg --caption "Series" --alt "Untitled study"
 ```
 
 Flags:
@@ -225,7 +236,7 @@ Flags:
 Check what the instance allows (works without auth):
 
 ```
-python pfpost.py info
+pfpost.exe info
 ```
 
 gram.social as of this writing: 2000 character captions, 20 attachments,
@@ -238,16 +249,16 @@ server return an opaque 422 halfway through.
 Add to the queue — absolute local time, or relative:
 
 ```
-python pfpost.py queue add photo.jpg --caption "Later" --at "2026-09-10 17:00"
-python pfpost.py queue add photo.jpg --caption "Soon" --at +2h
+pfpost.exe queue add photo.jpg --caption "Later" --at "2026-09-10 17:00"
+pfpost.exe queue add photo.jpg --caption "Soon" --at +2h
 ```
 
 Inspect and manage:
 
 ```
-python pfpost.py queue list
-python pfpost.py queue list --all
-python pfpost.py queue remove abc12345
+pfpost.exe queue list
+pfpost.exe queue list --all
+pfpost.exe queue remove abc12345
 ```
 
 In the desktop app the queue table has **Clear posted**, which drops everything
@@ -259,7 +270,7 @@ pending.
 Publish everything due:
 
 ```
-python pfpost.py queue run
+pfpost.exe queue run
 ```
 
 **A queued post publishes only when something runs the queue.** While the
@@ -274,9 +285,9 @@ rather than letting the post sit there silently.
 From the command line:
 
 ```
-python pfpost.py schedule --install
-python pfpost.py schedule --status
-python pfpost.py schedule --remove
+pfpost.exe schedule --install
+pfpost.exe schedule --status
+pfpost.exe schedule --remove
 ```
 
 `--install` registers a Windows scheduled task that runs `queue run` every 15
@@ -300,7 +311,9 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
 - **Missing alt text is flagged before posting**, not after — Pixelfed cannot
   add it later. The desktop app offers to jump to the empty field; the CLI
   prints a note to stderr rather than blocking, so scripts and scheduled runs
-  are unaffected.
+  are unaffected. If you've decided not to add alt text, tick *Don't ask me
+  about alt text again* in the prompt, or untick **Options → Ask about missing
+  alt text**; that silences the CLI note too.
 - **Links in public captions are flagged too.** Pixelfed's spam filter
   (`Bouncer`) turns a public post unlisted, after it has been accepted, when the
   caption contains `https://`, `www.`, `.com`, `.net`, `.org` and similar, on
@@ -348,8 +361,8 @@ duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
 ## Tests
 
 ```
-python test_pfpost.py
-python test_gui.py
+.venv\Scripts\python.exe test_pfpost.py
+.venv\Scripts\python.exe test_gui.py
 ```
 
 `test_pfpost.py` runs against a mock Pixelfed on port 47311, exercising the
@@ -362,8 +375,9 @@ nginx header cap, so the scope-narrowing logic is tested rather than assumed.
 `test_gui.py` builds the real widgets on Qt's offscreen platform, so it runs
 headless and in CI. It covers construction, the data path from the image table
 to a post payload, the pre-post dialogs, palette contrast, and a few rendered
-pixels where a style rule is known to be silently ignorable. It skips cleanly if
-PySide6 is absent.
+pixels where a style rule is known to be silently ignorable. If PySide6 is
+missing it **fails** rather than skipping, so running it on the wrong Python
+can't pass by testing nothing; set `PFPOST_SKIP_GUI_TESTS=1` to skip on purpose.
 
 No network access and no credentials needed for either suite.
 

@@ -63,11 +63,24 @@ def build(name: str, windowed: bool, icon: Path) -> None:
 
 
 def main() -> int:
-    try:
-        import PyInstaller                                   # noqa: F401
-    except ImportError:
-        print("PyInstaller is not installed. Run:  pip install pyinstaller")
+    # PyInstaller bundles whatever this interpreter has. A missing PySide6
+    # does not fail the build - it yields a pfpost-gui.exe that dies on launch,
+    # and a missing keyring silently drops to DPAPI. So check them all first.
+    missing = []
+    for module, package in (("PyInstaller", "pyinstaller"), ("PySide6", "PySide6"),
+                            ("keyring", "keyring")):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(package)
+    if missing:
+        print("Not installed for %s: %s" % (sys.executable, ", ".join(missing)))
+        print("Set up the project environment and build from it:")
+        print("  python -m venv .venv")
+        print("  .venv\\Scripts\\python.exe -m pip install -r requirements.txt pyinstaller")
+        print("  .venv\\Scripts\\python.exe build.py")
         return 1
+    print("Building with %s" % sys.executable)
 
     # Without --icon, PyInstaller stamps its default Python icon on both
     # binaries. Drawn from the same code as the in-app icon, so the two
