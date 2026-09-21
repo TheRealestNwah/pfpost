@@ -19,6 +19,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pfpost import api, queue as pfqueue, store          # noqa: E402
 from pfpost.session import Session                        # noqa: E402
 
+
+class MemoryKeyring:
+    """Test double for the system credential store.
+
+    The production path deliberately prefers Windows Credential Manager.  That
+    API cannot be used from CI or other non-interactive Windows sessions
+    (CredWrite returns WinError 1312), so core tests must not touch it.
+    """
+    def __init__(self):
+        self.values = {}
+
+    def set_password(self, service, username, password):
+        self.values[service, username] = password
+
+    def get_password(self, service, username):
+        return self.values.get((service, username))
+
+    def delete_password(self, service, username):
+        try:
+            del self.values[service, username]
+        except KeyError:
+            # Matches keyring's practical contract for a missing old secret:
+            # forgetting credentials should remain safe to retry.
+            pass
+
+
+# Keep the production backend selection intact. Only this test process uses an
+# in-memory store, so tests cannot create, read or require real credentials.
+TEST_KEYRING = MemoryKeyring()
+store._keyring = TEST_KEYRING
+store._HAS_KEYRING = True
+
 PORT = 47311
 RECEIVED = []
 MEDIA_COUNTER = [0]
@@ -152,6 +184,8 @@ def main():
 
     print("\n1. credential storage")
     print("  backend in use: %s" % store.backend_name())
+    check("uses the in-memory keyring, not the Windows credential store",
+          store._keyring is TEST_KEYRING)
     secret = "super-secret-value-eu-check"
     ref = store.store_secret("test_secret", secret)
     check("secret is not stored in the clear",
