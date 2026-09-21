@@ -3,6 +3,7 @@
 *.spec
 .idea/
 .venv/
+.venv-build/
 .vscode/
 __pycache__/
 build/

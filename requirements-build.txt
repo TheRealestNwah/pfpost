@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Release packaging is pinned so a rebuilt executable uses the same tested
+# Qt and PyInstaller versions instead of whichever versions are newest.
+PySide6==6.10.1
+pyinstaller==6.22.3
+ruff==0.16.8
