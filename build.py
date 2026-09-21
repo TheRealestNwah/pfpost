@@ -39,10 +39,18 @@ HIDDEN = [
 ]
 
 
-def run(args: list[str]) -> None:
+def run(args: list[str], name: str) -> None:
     print("$ " + " ".join(args), flush=True)
-    result = subprocess.run(args, cwd=ROOT)
+    result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+    print(result.stdout, end="")
+    print(result.stderr, end="", file=sys.stderr)
     if result.returncode != 0:
+        target = ROOT / "dist" / (name + ".exe")
+        if target.exists() and ("PermissionError" in result.stderr
+                                or "Access is denied" in result.stderr):
+            raise SystemExit(
+                "Cannot replace %s because it is still running. Close it, then run build.py again."
+                % target.name)
         raise SystemExit("Build failed: %s" % " ".join(args))
 
 
@@ -64,7 +72,7 @@ def build(name: str, windowed: bool, icon: Path) -> None:
     args += ["--add-data", "%s%spfpost/fonts" % (ROOT / "pfpost" / "fonts", os.pathsep)]
     args += ["--windowed"] if windowed else ["--console"]
     args.append(str(ENTRY))
-    run(args)
+    run(args, name)
 
 
 def main() -> int:
