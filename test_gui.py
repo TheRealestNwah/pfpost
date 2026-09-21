@@ -57,7 +57,7 @@ def check(label, condition, detail=""):
 def main():
     app = QApplication([])                                    # noqa: F841
     from PySide6.QtCore import QEvent
-    from PySide6.QtGui import QColor, QImage, QPalette
+    from PySide6.QtGui import QColor, QImage
     from PySide6.QtWidgets import QApplication as _QApp
     from pfpost import theme as pftheme
     from pfpost.gui import ConnectDialog, MainWindow
