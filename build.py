@@ -39,9 +39,46 @@ HIDDEN = [
 ]
 
 
+def build_environment() -> dict[str, str]:
+    """Return a minimal PATH for the PyInstaller child process.
+
+    PyInstaller examines PATH while resolving native dependencies. Developer
+    shells can prepend unrelated Qt, OpenSSL, and compiler directories there;
+    collecting one of those DLLs produces a valid-looking executable that
+    fails only when Qt is imported. Keep the rest of the environment, but make
+    native DLL resolution deterministic on Windows.
+    """
+    env = os.environ.copy()
+    if os.name != "nt":
+        return env
+
+    python_scripts = Path(sys.executable).resolve().parent
+    python_home = Path(sys.base_prefix).resolve()
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows")).resolve()
+    candidates = (
+        python_scripts,
+        python_home,
+        python_home / "Scripts",
+        system_root / "System32",
+        system_root,
+    )
+    # Preserve order while avoiding duplicate directories on case-insensitive
+    # Windows filesystems.
+    clean_path: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = os.path.normcase(str(path))
+        if key not in seen:
+            seen.add(key)
+            clean_path.append(str(path))
+    env["PATH"] = os.pathsep.join(clean_path)
+    return env
+
+
 def run(args: list[str], name: str) -> None:
     print("$ " + " ".join(args), flush=True)
-    result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(
+        args, cwd=ROOT, env=build_environment(), capture_output=True, text=True)
     print(result.stdout, end="")
     print(result.stderr, end="", file=sys.stderr)
     if result.returncode != 0:

@@ -23,7 +23,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip ruff; python -m pip install -r requirements.txt
+        run: python -m pip install --upgrade pip; python -m pip install -r requirements-build.txt
 
       - name: Lint production code
         run: python -m ruff check --select F,E9 pfpost build.py pfpost.py
@@ -35,3 +35,29 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python test_gui.py
+
+      - name: Build frozen applications
+        run: python build.py
+
+      - name: Smoke-test frozen applications
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\dist\pfpost.exe --version
+          $env:PFPOST_HOME = Join-Path $env:RUNNER_TEMP 'pfpost-smoke-home'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          New-Item -ItemType Directory -Force -Path $env:PFPOST_HOME | Out-Null
+
+          $console = Start-Process .\dist\pfpost.exe -ArgumentList 'gui' -PassThru
+          Start-Sleep -Seconds 3
+          if ($console.HasExited) { throw 'pfpost.exe gui exited during startup' }
+          Get-Process pfpost -ErrorAction SilentlyContinue |
+            Where-Object Path -eq (Resolve-Path .\dist\pfpost.exe).Path |
+            Stop-Process -Force
+
+          $windowed = Start-Process .\dist\pfpost-gui.exe -PassThru
+          Start-Sleep -Seconds 3
+          if ($windowed.HasExited) { throw 'pfpost-gui.exe exited during startup' }
+          Get-Process pfpost-gui -ErrorAction SilentlyContinue |
+            Where-Object Path -eq (Resolve-Path .\dist\pfpost-gui.exe).Path |
+            Stop-Process -Force

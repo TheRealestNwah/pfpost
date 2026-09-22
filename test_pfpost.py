@@ -565,6 +565,27 @@ def main():
     check("missing streams get somewhere to write",
           "os.devnull" in source)
 
+    print("\n9d. reproducible frozen-build environment")
+    import build as build_script
+    from unittest.mock import patch
+
+    if os.name == "nt":
+        contaminated = os.pathsep.join([
+            r"C:\unrelated-qt\bin", r"C:\unrelated-openssl\bin"])
+        with patch.dict(os.environ, {"PATH": contaminated}):
+            frozen_env = build_script.build_environment()
+        clean_parts = frozen_env["PATH"].split(os.pathsep)
+        check("build excludes unrelated native DLL directories",
+              all("unrelated" not in part for part in clean_parts))
+        check("build keeps its Python interpreter directory",
+              str(Path(sys.executable).resolve().parent) in clean_parts)
+        check("build keeps Windows system DLL directories",
+              any(part.lower().endswith(r"windows\system32")
+                  for part in clean_parts))
+    else:
+        check("non-Windows builds retain PATH",
+              build_script.build_environment()["PATH"] == os.environ["PATH"])
+
     print("\n10. schedule command output")
     import io
     from contextlib import redirect_stdout

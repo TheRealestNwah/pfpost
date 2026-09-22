@@ -51,13 +51,17 @@ upgrading or replacing your system Python can't break it:
 
 ```
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 .venv\Scripts\python.exe build.py
 ```
 
 Run the app and tests the same way, e.g. `.venv\Scripts\python.exe pfpost.py gui`.
 There's no need to activate the environment. If your Python version changes,
 delete `.venv` and run the first two lines again.
+
+The build requirements pin the packaging toolchain used for release binaries.
+`build.py` also gives PyInstaller a minimal native-library search path so Qt
+DLLs from another SDK or developer shell cannot be bundled by accident.
 
 `keyring` is strongly recommended — without it pfpost falls back to Windows
 DPAPI, and on other platforms it will refuse to store credentials rather than
