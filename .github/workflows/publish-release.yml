@@ -1,0 +1,42 @@
+name: Publish release
+
+# Publishes a draft made by the Release workflow. Run it from the Actions tab
+# with the version and the finished notes; the notes replace the draft's body,
+# so include the download table and checksums from the draft.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, as in pfpost/__init__.py (e.g. 1.2.0)
+        required: true
+      notes:
+        description: Release notes (Markdown); replaces the draft's body
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish draft release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v${{ inputs.version }}
+      NOTES: ${{ inputs.notes }}
+    steps:
+      - name: Publish
+        run: |
+          if ! is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            echo "::error::No release found for $TAG. Run the Release workflow first."
+            exit 1
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::Release $TAG is already published"
+            exit 1
+          fi
+          printf '%s\n' "$NOTES" > notes.md
+          gh release edit "$TAG" --notes-file notes.md --draft=false --latest
+          gh release view "$TAG" --json url --jq .url

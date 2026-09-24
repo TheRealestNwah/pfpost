@@ -1,12 +1,16 @@
 name: Release
 
-# Push a version tag (git tag v1.2.0 && git push origin v1.2.0) to build both
-# executables in CI and attach them to a draft release. The draft gets the
-# download table and checksums; write the rest of the notes, then publish it
-# by hand. Nothing is published automatically.
+# Builds both executables in CI and attaches them to a draft release. The draft
+# gets the download table and checksums; publish it with the Publish release
+# workflow (or by hand from the Releases page). Nothing is published here.
 #
-# To rebuild an existing tag's draft, run this workflow from the Actions tab
-# and pick the tag under "Use workflow from".
+# Start it either way:
+# - Run this workflow from the Actions tab on main. It reads __version__ from
+#   pfpost/__init__.py and, once the build passes, tags that commit vX.Y.Z.
+# - Or push the tag yourself (git tag v1.2.0 && git push origin v1.2.0).
+#
+# To rebuild an existing tag's draft, run it again from main (if main is still
+# on the tagged commit) or pick the tag under "Use workflow from".
 
 on:
   push:
@@ -20,21 +24,42 @@ jobs:
   check-version:
     name: Check tag matches pfpost/__init__.py
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Compare tag and version
+      - name: Work out the release tag
+        id: version
         run: |
-          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
-            echo "::error::Run this workflow from a version tag, not the $GITHUB_REF_NAME branch"
-            exit 1
-          fi
           version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' pfpost/__init__.py)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ \"$version\" in pfpost/__init__.py"
-            exit 1
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$tag" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match __version__ \"$version\" in pfpost/__init__.py"
+              exit 1
+            fi
+          else
+            default=$(gh api "repos/$GH_REPO" --jq .default_branch)
+            if [ "$GITHUB_REF_NAME" != "$default" ]; then
+              echo "::error::Run this workflow from $default or a version tag, not the $GITHUB_REF_NAME branch"
+              exit 1
+            fi
+            # An existing tag must already point here; otherwise main has moved
+            # on since that release and needs a version bump first.
+            if tagged=$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null); then
+              if [ "$tagged" != "$GITHUB_SHA" ]; then
+                echo "::error::$tag already exists on $tagged, not $GITHUB_SHA. Bump __version__ before releasing again."
+                exit 1
+              fi
+            fi
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $GITHUB_SHA"
 
   build:
     name: Build and test
@@ -43,14 +68,14 @@ jobs:
 
   release:
     name: Attach to draft release
-    needs: build
+    needs: [check-version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ needs.check-version.outputs.tag }}
     steps:
       - name: Download tested executables
         uses: actions/download-artifact@v4
@@ -84,6 +109,19 @@ jobs:
           \`\`\`
           EOF
           cat ../notes.md
+
+      - name: Tag this commit
+        if: github.ref_type != 'tag'
+        run: |
+          if tagged=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha 2>/dev/null); then
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::$TAG was created on $tagged while this run was building $GITHUB_SHA"
+              exit 1
+            fi
+            echo "$TAG already points at $GITHUB_SHA"
+          else
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA"
+          fi
 
       - name: Create or update the draft release
         run: |

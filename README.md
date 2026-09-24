@@ -64,10 +64,12 @@ The build requirements pin the packaging toolchain used for release binaries.
 `build.py` also gives PyInstaller a minimal native-library search path so Qt
 DLLs from another SDK or developer shell cannot be bundled by accident.
 
-Release binaries come from CI, not a local build. Pushing a tag that matches
-`__version__` in `pfpost/__init__.py` (e.g. `v1.2.0`) runs the same tests,
-build and smoke test as every pull request, then attaches those exact files to
-a draft release with their checksums. Write the notes and publish it from the
+Release binaries come from CI, not a local build. Running the **Release**
+workflow on `main` from the Actions tab (or pushing a tag that matches
+`__version__` in `pfpost/__init__.py`, e.g. `v1.2.0`) runs the same tests,
+build and smoke test as every pull request, tags the commit, then attaches
+those exact files to a draft release with their checksums. Publish it with the
+**Publish release** workflow, giving it the version and the notes, or from the
 Releases page.
 
 `keyring` is strongly recommended — without it pfpost falls back to Windows
