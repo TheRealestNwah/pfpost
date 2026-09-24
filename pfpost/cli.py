@@ -273,15 +273,20 @@ def cmd_schedule(args):
     if args.status:
         info = pfscheduler.status(task)
         if info.get("unsupported"):
-            die("Background posting via Task Scheduler is Windows-only.")
+            die(pfscheduler.unsupported_message())
         if not info["registered"]:
             print("Background posting is off. Enable it with:  pfpost schedule --install")
             return
         print("Background posting  on, %s" % pfscheduler.describe_interval(info["interval"]))
         print("State               %s" % info["state"])
-        print("Last run            %s (result %s)"
-              % (info["last_run"] or "never", info["last_result"]))
+        last = info["last_run"] or "never"
+        if info["last_result"] is not None:
+            last += " (result %s)" % info["last_result"]
+        print("Last run            %s" % last)
         print("Next run            %s" % (info["next_run"] or "unknown"))
+        if info.get("broken"):
+            print("Problem             the program it runs is missing (%s). "
+                  "Fix with:  pfpost schedule --install" % (info["program"] or "unknown"))
         return
 
     if args.install:
@@ -301,6 +306,23 @@ def cmd_schedule(args):
             die(exc)
         print("Background posting disabled. Queued posts now publish only when "
               "you run `pfpost queue run`.")
+        return
+
+    kind = pfscheduler.backend()
+    if kind is None:
+        die(pfscheduler.unsupported_message())
+    if kind != "taskscheduler":
+        argv, workdir = pfscheduler.runner_argv()
+        try:
+            steps = pfscheduler.manual_instructions(
+                kind, argv, workdir, every, task, str(pfscheduler.log_path()),
+                pfscheduler.runner_env())
+        except pfscheduler.SchedulerError as exc:
+            die(exc)
+        print("Tip: `pfpost schedule --install` does all of this for you.\n")
+        print("Run the queue every %d minutes with %s.\n"
+              % (every, pfscheduler.BACKEND_LABELS[kind]))
+        print(steps)
         return
 
     executable, arguments, workdir = pfscheduler.runner_command()
@@ -419,14 +441,15 @@ def build_parser() -> argparse.ArgumentParser:
     qrun.add_argument("--limit", type=int, default=0, help="max posts this run")
     qrun.set_defaults(func=cmd_queue_run)
 
-    sched = sub.add_parser("schedule", help="print the Task Scheduler command")
+    sched = sub.add_parser("schedule", help="set up background posting "
+                           "(Task Scheduler, launchd, systemd or cron)")
     sched.add_argument("--every", type=int, default=pfscheduler.DEFAULT_INTERVAL,
                        help="minutes between queue checks")
     sched.add_argument("--name", default=pfscheduler.TASK_NAME,
-                       help="scheduled task name")
+                       help="scheduled job name")
     sched.add_argument("--install", action="store_true",
-                       help="register the task instead of printing the commands")
-    sched.add_argument("--remove", action="store_true", help="unregister the task")
+                       help="register the job instead of printing the steps")
+    sched.add_argument("--remove", action="store_true", help="unregister the job")
     sched.add_argument("--status", action="store_true",
                        help="report whether background posting is on")
     sched.set_defaults(func=cmd_schedule)

@@ -168,6 +168,370 @@ def check(label, condition, detail=""):
                            ("  <- " + detail) if detail and not condition else ""))
 
 
+class FakeScheduler:
+    """Stands in for launchctl, systemctl and crontab.
+
+    Records every command and answers the few that return output, so the
+    macOS and Linux backends can be driven end to end on any OS - CI runs on
+    Windows, where none of these programs exist.
+    """
+    def __init__(self, sched):
+        self.sched = sched
+        self.calls = []
+        self.crontab = None            # None = the user has no crontab yet
+        self.crontab_error = ""        # set to make `crontab -l` fail
+        self.launchd_loaded = False
+        self.show = {}
+
+    def run(self, argv, input=None, timeout=30):
+        self.calls.append(list(argv))
+        if argv[:2] == ["crontab", "-l"]:
+            if self.crontab_error:
+                raise self.sched.SchedulerError(self.crontab_error)
+            if self.crontab is None:
+                raise self.sched.SchedulerError("no crontab for pat")
+            return self.crontab
+        if argv[:2] == ["crontab", "-"]:
+            self.crontab = input
+            return ""
+        if argv[:2] == ["launchctl", "bootstrap"]:
+            self.launchd_loaded = True
+        if argv[:2] == ["launchctl", "bootout"]:
+            if not self.launchd_loaded:
+                raise self.sched.SchedulerError("Boot-out failed: 3: No such process")
+            self.launchd_loaded = False
+        if argv[:2] == ["launchctl", "print"]:
+            if not self.launchd_loaded:
+                raise self.sched.SchedulerError("Could not find service")
+            return ("gui/501/pfpost.pixelfed-poster = {\n\tactive count = 0\n"
+                    "\tstate = not running\n\truns = 2\n\tlast exit code = 0\n"
+                    "\tendpoints = {\n\t\tstate = active\n\t}\n}\n")
+        if argv[:3] == ["systemctl", "--user", "show"]:
+            return self.show.get(argv[3], "")
+        return ""
+
+    def ran(self, *prefix):
+        return [c for c in self.calls if c[:len(prefix)] == list(prefix)]
+
+
+def posix_scheduler_checks(sched, cli):
+    import io
+    from contextlib import redirect_stdout
+
+    print("\n  macOS and Linux runners (no job is created)")
+    root = Path(tempfile.mkdtemp(prefix="pfsched"))
+    python = str(Path(sys.executable).absolute())
+    launcher = str(Path(__file__).resolve().parent / "pfpost.py")
+    argv = [python, launcher, "queue", "run"]
+    workdir = str(Path(__file__).resolve().parent)
+
+    check("names become safe slugs", sched.slug("Pixelfed Poster") == "pixelfed-poster")
+    check("an unusable name still gets a slug", sched.slug("!!!") == "pfpost")
+    check("launchd label", sched.launchd_label() == "pfpost.pixelfed-poster")
+    check("systemd unit", sched.systemd_unit() == "pfpost-pixelfed-poster")
+    for minutes, iso in ((15, "PT15M"), (60, "PT1H"), (90, "PT90M"), (1440, "PT24H")):
+        check("%d minutes reports as %s" % (minutes, iso), sched.iso_interval(minutes) == iso)
+        check("which reads back as %d minutes" % minutes,
+              sched.interval_minutes(sched.iso_interval(minutes)) == minutes)
+
+    run_argv, run_dir = sched.runner_argv()
+    check("POSIX runner runs `queue run`", run_argv[-2:] == ["queue", "run"], str(run_argv))
+    check("POSIX runner points at a real program", Path(run_argv[0]).exists(), run_argv[0])
+    check("POSIX runner has a working directory", Path(run_dir).is_dir(), run_dir)
+    # A venv's python is a symlink to the base interpreter; following it would
+    # run the job without the venv's packages.
+    check("POSIX runner keeps a virtual environment's python",
+          run_argv[0] == str(Path(sys.executable).absolute()), run_argv[0])
+
+    env = sched.runner_env({"PFPOST_HOME": "/home/pat/pf", "PATH": "/usr/bin",
+                            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus,guid=ab"})
+    check("the job keeps PFPOST_HOME", env.get("PFPOST_HOME") == "/home/pat/pf", str(env))
+    check("the job keeps a fixed session bus, for keyring",
+          env.get("DBUS_SESSION_BUS_ADDRESS") == "unix:path=/run/user/1000/bus", str(env))
+    check("but not the rest of the environment", "PATH" not in env, str(env))
+    check("an abstract session bus is left out",
+          "DBUS_SESSION_BUS_ADDRESS" not in sched.runner_env(
+              {"DBUS_SESSION_BUS_ADDRESS": "unix:abstract=/tmp/dbus-x"}))
+
+    check("present program is not missing", sched.program_missing(argv) == "")
+    check("a missing program is found",
+          sched.program_missing(["/nonexistent/python3", launcher]) == "/nonexistent/python3")
+    check("a missing script is found",
+          sched.program_missing([python, "/gone/pfpost.py", "queue", "run"]) == "/gone/pfpost.py")
+    check("the log lives with pfpost's config",
+          sched.log_path().parent == store.config_dir(), str(sched.log_path()))
+
+    # -- launchd builders
+    import plistlib
+    plist = plistlib.loads(sched.build_launchd_plist(
+        ["/Apps/Pixelfed Poster/pfpost", "queue", "run"], "/Apps/Pixelfed Poster", 20,
+        log="/tmp/pf.log", env={"PFPOST_HOME": "/x"}))
+    check("plist runs the program with separate arguments",
+          plist["ProgramArguments"] == ["/Apps/Pixelfed Poster/pfpost", "queue", "run"])
+    check("plist interval is in seconds", plist["StartInterval"] == 1200)
+    check("plist also runs at login, to catch up after a reboot", plist["RunAtLoad"] is True)
+    check("plist keeps the working directory",
+          plist["WorkingDirectory"] == "/Apps/Pixelfed Poster")
+    check("plist logs output", plist["StandardOutPath"] == "/tmp/pf.log"
+          and plist["StandardErrorPath"] == "/tmp/pf.log")
+    check("plist carries the environment", plist["EnvironmentVariables"] == {"PFPOST_HOME": "/x"})
+    # plistlib writes XML, so markup in a path cannot break out of its string.
+    odd = sched.build_launchd_plist(["/o'b <&> \"q\"/python3"], "/", 15)
+    check("plist escapes markup in paths",
+          plistlib.loads(odd)["ProgramArguments"] == ["/o'b <&> \"q\"/python3"])
+    try:
+        sched.build_launchd_plist(argv, workdir, every=0)
+        check("plist rejects a zero interval", False)
+    except sched.SchedulerError:
+        check("plist rejects a zero interval", True)
+    job = sched.parse_launchd_plist(sched.build_launchd_plist(argv, workdir, 30, log="/l"))
+    check("plist reads back", job == {"argv": argv, "minutes": 30, "log": "/l"}, str(job))
+    check("an unreadable plist reads as empty",
+          sched.parse_launchd_plist(b"not a plist")["argv"] == [])
+
+    printed = sched.parse_launchctl_print(
+        "gui/501/pfpost.x = {\n\tstate = running\n\truns = 4\n"
+        "\tlast exit code = 78: EX_CONFIG\n\tendpoints = {\n\t\tstate = active\n\t}\n}")
+    check("launchctl state is the job's, not a sub-section's", printed["state"] == "running")
+    check("launchctl exit code", printed["last_result"] == 78, str(printed))
+    check("a job that has not exited has no result",
+          sched.parse_launchctl_print("\tlast exit code = (never exited)")["last_result"] is None)
+
+    # -- systemd builders
+    service = sched.build_systemd_service(
+        ["/home/pat/My Stuff/python3", "/home/pat/100% \"real\"/pfpost.py", "queue", "run"],
+        "/home/pat/100% real", {"PFPOST_HOME": "/home/pat/$pf"})
+    check("service is a oneshot", "Type=oneshot" in service)
+    check("service quotes paths with spaces",
+          'ExecStart="/home/pat/My Stuff/python3"' in service, service)
+    check("service escapes %, quotes and $",
+          '"/home/pat/100%% \\"real\\"/pfpost.py"' in service, service)
+    check("working directory escapes %", "WorkingDirectory=/home/pat/100%% real" in service)
+    check("environment keeps a literal $", 'Environment="PFPOST_HOME=/home/pat/$pf"' in service)
+    check("ExecStart reads back as the same argv",
+          sched.parse_systemd_service(service)
+          == ["/home/pat/My Stuff/python3", '/home/pat/100% "real"/pfpost.py', "queue", "run"],
+          str(sched.parse_systemd_service(service)))
+    timer = sched.build_systemd_timer(15)
+    check("timer repeats on the interval", "OnUnitActiveSec=15min" in timer)
+    check("timer starts soon after enabling or login", "OnActiveSec=" in timer)
+    check("timer activates its service", "Unit=pfpost-pixelfed-poster.service" in timer)
+    check("timer is enabled by timers.target", "WantedBy=timers.target" in timer)
+    check("timer interval reads back", sched.parse_systemd_timer(timer) == 15)
+    try:
+        sched.build_systemd_timer(0)
+        check("timer rejects a zero interval", False)
+    except sched.SchedulerError:
+        check("timer rejects a zero interval", True)
+    shown = sched.parse_systemctl_show("ActiveState=active\nSubState=waiting\nEmpty=\n")
+    check("systemctl show parses", shown == {"ActiveState": "active", "SubState": "waiting",
+                                             "Empty": ""}, str(shown))
+
+    # -- cron builders
+    for minutes, fields in ((1, "* * * * *"), (15, "*/15 * * * *"), (30, "*/30 * * * *"),
+                            (60, "0 * * * *"), (120, "0 */2 * * *"), (1440, "0 0 * * *")):
+        check("cron every %d minutes is %r" % (minutes, fields),
+              sched.cron_schedule(minutes) == fields)
+        check("and %r reads back" % fields, sched.parse_cron_schedule(fields) == minutes)
+    for minutes in (0, 7, 45, 90, 300):
+        try:
+            sched.cron_schedule(minutes)
+            check("cron refuses an uneven %d-minute interval" % minutes, False)
+        except sched.SchedulerError:
+            check("cron refuses an uneven %d-minute interval" % minutes, True)
+    check("unknown cron fields read as no interval",
+          sched.parse_cron_schedule("5 4 * * 1") is None)
+
+    line = sched.build_cron_line(["/home/pat/it's here/python3", "/p/pfpost.py", "queue", "run"],
+                                 "/home/pat/50% off", 15, "/home/pat/pf.log",
+                                 {"PFPOST_HOME": "/home/pat/pf"})
+    check("cron line starts with its schedule", line.startswith("*/15 * * * * cd "), line)
+    check("cron line quotes apostrophes for the shell", "'/home/pat/it'\"'\"'s here/python3'" in line,
+          line)
+    check("cron line escapes %", "50\\% off" in line and "50% off" not in line, line)
+    check("cron line appends to the log", line.endswith(">> /home/pat/pf.log 2>&1"), line)
+    check("cron line sets the environment", " env PFPOST_HOME=/home/pat/pf " in line, line)
+
+    mine = "MAILTO=pat\n# backups\n0 3 * * * /usr/local/bin/backup\n"
+    added = sched.update_crontab(mine, "Pixelfed Poster", line)
+    check("adding keeps the user's own entries", added.startswith(mine), added)
+    check("adding marks its entry", "# pfpost: Pixelfed Poster\n" + line in added, added)
+    again = sched.update_crontab(added, "Pixelfed Poster", line.replace("*/15", "*/30"))
+    check("re-adding replaces rather than duplicates",
+          again.count("# pfpost: Pixelfed Poster") == 1 and "*/15" not in again, again)
+    check("removing restores the crontab exactly",
+          sched.update_crontab(again, "Pixelfed Poster") == mine)
+    check("removing leaves other pfpost jobs",
+          "# pfpost: Other" in sched.update_crontab(
+              sched.update_crontab(added, "Other", line), "Pixelfed Poster"))
+    entry = sched.parse_crontab(added)
+    check("crontab entry reads back", entry["registered"] and entry["minutes"] == 15, str(entry))
+    check("crontab entry's program reads back",
+          entry["argv"] == ["/home/pat/it's here/python3", "/p/pfpost.py", "queue", "run"],
+          str(entry))
+    check("crontab entry's working directory and log read back",
+          entry["workdir"] == "/home/pat/50% off" and entry["log"] == "/home/pat/pf.log",
+          str(entry))
+    check("no entry reads as not registered", sched.parse_crontab(mine)["registered"] is False)
+    check("a name with a newline cannot add a crontab line",
+          sched.cron_marker("a\n* * * * * rm -rf ~") == "# pfpost: a * * * * * rm -rf ~")
+
+    # -- the three backends end to end, against a fake scheduler
+    saved = {k: getattr(sched, k) for k in (
+        "_run", "_uid", "backend", "launch_agents_dir", "systemd_user_dir", "runner_argv")}
+    fake = FakeScheduler(sched)
+    sched._run, sched._uid = fake.run, lambda: 501
+    sched.launch_agents_dir = lambda: root / "LaunchAgents"
+    sched.systemd_user_dir = lambda: root / "systemd"
+    sched.runner_argv = lambda: (argv, workdir)
+    try:
+        print("\n  launchd, end to end")
+        sched.backend = lambda: "launchd"
+        check("launchd counts as available", sched.available())
+        check("launchd is named in messages", sched.backend_label() == "launchd")
+        check("nothing is registered at first", sched.status()["registered"] is False)
+        info = sched.register(20)
+        agent = root / "LaunchAgents" / "pfpost.pixelfed-poster.plist"
+        check("register writes the agent", agent.exists())
+        check("register loads it into the login session",
+              fake.ran("launchctl", "bootstrap", "gui/501", str(agent)), str(fake.calls))
+        check("status reports it on", info["registered"] and info["interval"] == "PT20M",
+              str(info))
+        check("status reads launchctl", info["state"] == "not running"
+              and info["last_result"] == 0, str(info))
+        check("a healthy agent is not broken", info["broken"] is False, str(info))
+        fake.calls.clear()
+        sched.register(30)
+        check("re-registering unloads the old agent before loading the new one",
+              [c[1] for c in fake.calls if c[0] == "launchctl"][:2] == ["bootout", "bootstrap"]
+              and fake.launchd_loaded, str(fake.calls))
+        check("and changes the interval", sched.status()["interval"] == "PT30M")
+        sched.run_now()
+        check("run now kicks the job",
+              fake.ran("launchctl", "kickstart", "gui/501/pfpost.pixelfed-poster"))
+        agent.write_bytes(sched.build_launchd_plist(["/gone/python3", launcher, "queue", "run"],
+                                                    workdir, 30))
+        gone = sched.status()
+        check("an agent whose python was removed is broken",
+              gone["broken"] is True and gone["program"] == "/gone/python3", str(gone))
+        sched.unregister()
+        check("unregister unloads and deletes the agent",
+              not agent.exists() and not fake.launchd_loaded)
+        check("and it reads as off", sched.status()["registered"] is False)
+        sched.unregister()
+        check("unregistering twice is harmless", True)
+
+        print("\n  systemd, end to end")
+        sched.backend = lambda: "systemd"
+        fake.calls.clear()
+        check("nothing is registered at first", sched.status()["registered"] is False)
+        fake.show = {"pfpost-pixelfed-poster.timer": "ActiveState=active\nSubState=waiting\n",
+                     "pfpost-pixelfed-poster.service":
+                         "ExecMainStatus=0\nExecMainExitTimestamp=\n"}
+        info = sched.register(15)
+        unit = root / "systemd" / "pfpost-pixelfed-poster"
+        check("register writes the service and timer",
+              unit.with_suffix(".service").exists() and unit.with_suffix(".timer").exists())
+        check("register reloads, enables and restarts the timer",
+              [c[2:] for c in fake.calls if c[2] in ("daemon-reload", "enable", "restart")]
+              == [["daemon-reload"], ["enable", "pfpost-pixelfed-poster.timer"],
+                  ["restart", "pfpost-pixelfed-poster.timer"]], str(fake.calls))
+        check("status reports it on", info["registered"] and info["interval"] == "PT15M",
+              str(info))
+        check("status shows the timer waiting", info["state"] == "waiting", str(info))
+        check("a timer that has not fired yet has no result",
+              info["last_result"] is None and info["last_run"] == "", str(info))
+        check("the unit runs this pfpost", info["program"] == python and not info["broken"])
+        fake.show["pfpost-pixelfed-poster.service"] = (
+            "ExecMainStatus=203\nExecMainExitTimestamp=Thu 2026-09-24 01:30:00 UTC\n")
+        failed = sched.status()
+        check("systemd's could-not-execute status marks it broken",
+              failed["broken"] is True and failed["last_result"] == 203, str(failed))
+        check("and reports when it ran",
+              failed["last_run"] == "Thu 2026-09-24 01:30:00 UTC", str(failed))
+        sched.run_now()
+        check("run now starts the service without waiting",
+              fake.ran("systemctl", "--user", "start", "--no-block",
+                       "pfpost-pixelfed-poster.service"))
+        sched.unregister()
+        check("unregister disables the timer",
+              fake.ran("systemctl", "--user", "disable", "--now", "pfpost-pixelfed-poster.timer"))
+        check("and deletes both units",
+              not unit.with_suffix(".service").exists() and not unit.with_suffix(".timer").exists())
+        check("and it reads as off", sched.status()["registered"] is False)
+
+        print("\n  cron, end to end")
+        sched.backend = lambda: "cron"
+        check("nothing is registered at first", sched.status()["registered"] is False)
+        fake.crontab = mine
+        info = sched.register(30)
+        check("register adds the entry", "# pfpost: Pixelfed Poster" in fake.crontab)
+        check("keeping the user's own entries", fake.crontab.startswith(mine), fake.crontab)
+        check("status reports it on", info["registered"] and info["interval"] == "PT30M",
+              str(info))
+        check("a healthy entry is not broken", info["broken"] is False, str(info))
+        before = fake.crontab
+        try:
+            sched.register(45)
+            check("an uneven interval is refused", False)
+        except sched.SchedulerError as exc:
+            check("an uneven interval is refused, naming the ones that work",
+                  "every 1, 2, 3" in str(exc), str(exc))
+        check("and the crontab is untouched", fake.crontab == before)
+        fake.crontab_error = "crontab: cannot open /var/spool/cron: Permission denied"
+        try:
+            sched.register(15)
+            check("an unreadable crontab stops the install", False)
+        except sched.SchedulerError:
+            check("an unreadable crontab stops the install", True)
+        check("rather than replacing the user's crontab", fake.crontab == before)
+        fake.crontab_error = ""
+        sched.unregister()
+        check("unregister restores the crontab", fake.crontab == mine, fake.crontab)
+        writes = len(fake.ran("crontab", "-"))
+        sched.unregister()
+        check("unregistering again does not rewrite the crontab",
+              len(fake.ran("crontab", "-")) == writes)
+
+        print("\n  schedule command on macOS and Linux")
+        for kind, needles in (
+                ("launchd", ("<key>StartInterval</key>", "launchctl bootstrap",
+                             "launchctl bootout")),
+                ("systemd", ("OnUnitActiveSec=15min", "ExecStart=", "enable --now",
+                             "enable-linger")),
+                ("cron", ("*/15 * * * *", "# pfpost: Pixelfed Poster", "crontab -e"))):
+            sched.backend = lambda kind=kind: kind
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                cli.cmd_schedule(cli.build_parser().parse_args(["schedule", "--every", "15"]))
+            out = buffer.getvalue()
+            check("plain schedule prints the %s steps" % kind,
+                  all(n in out for n in needles), out)
+            check("and no PowerShell", "ScheduledTask" not in out)
+
+        sched.backend = lambda: "cron"
+        fake.crontab = ""
+        sched.register(15)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            cli.cmd_schedule(cli.build_parser().parse_args(["schedule", "--status"]))
+        out = buffer.getvalue()
+        check("--status reports it on", "Background posting  on, every 15 minutes" in out, out)
+        check("--status leaves out a result cron does not have", "result None" not in out, out)
+        sched.unregister()
+
+        sched.backend = lambda: None
+        check("no scheduler reads as unsupported", sched.status().get("unsupported") is True)
+        try:
+            sched.register(15)
+            check("and cannot be registered", False)
+        except sched.SchedulerError as exc:
+            check("and cannot be registered", "none was found" in str(exc), str(exc))
+    finally:
+        for key, value in saved.items():
+            setattr(sched, key, value)
+
+
 def main():
     server = HTTPServer(("127.0.0.1", PORT), MockPixelfed)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -593,10 +957,17 @@ def main():
 
     # Parse real arguments rather than hand-building a Namespace, so new flags
     # and changed defaults are picked up instead of silently diverging.
+    from pfpost import scheduler as sched
     parsed_args = cli.build_parser().parse_args(["schedule", "--every", "15"])
     buffer = io.StringIO()
-    with redirect_stdout(buffer):
-        cli.cmd_schedule(parsed_args)
+    # The PowerShell output is what this section checks, on whichever OS runs it.
+    real_backend = sched.backend
+    sched.backend = lambda: "taskscheduler"
+    try:
+        with redirect_stdout(buffer):
+            cli.cmd_schedule(parsed_args)
+    finally:
+        sched.backend = real_backend
     text = buffer.getvalue()
 
     check("plain schedule neither installs nor removes",
@@ -694,6 +1065,8 @@ def main():
     check("runner points at a real executable", Path(executable).exists(), executable)
     check("runner asks for `queue run`", arguments.endswith("queue run"), arguments)
     check("runner has a working directory", Path(workdir).is_dir(), workdir)
+
+    posix_scheduler_checks(sched, cli)
 
     print("\n12. update check (GitHub is faked; nothing leaves the machine)")
     from pfpost import updates, __version__
