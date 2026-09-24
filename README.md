@@ -26,8 +26,9 @@ size.
 
 Pixelfed has **no server-side post scheduling** — there is no `scheduled_at`
 parameter on `POST /api/v1/statuses`. Anything that "schedules" a Pixelfed post
-is really a local queue plus a clock. That is what `queue` + Windows Task
-Scheduler provide here.
+is really a local queue plus a clock. That is what `queue` plus the system
+scheduler (Task Scheduler on Windows, launchd on macOS, a systemd timer or cron
+on Linux) provide here.
 
 Posting is always two steps: upload each file to `/api/v1/media` to get an id,
 then create the status referencing those ids. Pixelfed requires at least one
@@ -144,7 +145,7 @@ pfpost/
   cli.py       command line interface
   gui.py       desktop interface (PySide6)
   theme.py     palette, stylesheet and app icon
-  scheduler.py Windows Task Scheduler integration
+  scheduler.py background runner: Task Scheduler, launchd, systemd or cron
 pfpost.py      launcher for running from a checkout
 ```
 
@@ -345,6 +346,40 @@ Two details that matter: `-StartWhenAvailable` makes the task catch up after
 sleep or a reboot instead of skipping a missed window, and an explicit
 `-RepetitionDuration` keeps it repeating — without one the trigger gets an empty
 duration alongside `StopAtDurationEnd`, and repetition can stop after a day.
+
+### macOS and Linux
+
+The same commands and the same Queue tab line work on macOS and Linux, from
+source (`python3 pfpost.py schedule --install`). What they register depends on
+the system:
+
+| | What `--install` creates | Removed by `--remove` |
+|---|---|---|
+| macOS | a launchd agent, `~/Library/LaunchAgents/pfpost.pixelfed-poster.plist` | unloaded and deleted |
+| Linux with systemd | a user timer and service, `~/.config/systemd/user/pfpost-pixelfed-poster.{timer,service}` | disabled and deleted |
+| Linux without systemd | two lines in your crontab, marked `# pfpost: Pixelfed Poster` | those lines only |
+
+Plain `pfpost schedule` prints the plist, unit files or crontab lines instead
+of installing them. The job runs the Python you enabled it from, so a virtual
+environment keeps its packages, and it keeps `PFPOST_HOME` if you set one. On
+macOS and with cron, output goes to `background.log` next to pfpost's config;
+with systemd it goes to the journal (`journalctl --user -u pfpost-pixelfed-poster`).
+If the program the job runs disappears, the Queue tab offers **Repair** as it
+does on Windows.
+
+A few differences from Windows:
+
+- An interval that falls while the machine sleeps runs late rather than
+  immediately on waking, so the worst case after sleep is one interval.
+- cron counts from the top of the hour, so it only accepts intervals that divide
+  an hour or a day evenly (1–6, 10, 12, 15, 20 or 30 minutes; 1–4, 6, 8, 12 or 24
+  hours). launchd and systemd take any interval.
+- A systemd user timer runs while you're logged in, as the Windows task does.
+  To keep it running after you log out: `loginctl enable-linger`.
+- cron jobs run without your desktop session, so pfpost passes along the session
+  bus that `keyring` needs to reach Secret Service. If posts still fail with a
+  keyring error in `background.log`, the job cannot reach your keyring from
+  cron, and posts will only go out while pfpost is open.
 
 ## Behaviour worth knowing
 

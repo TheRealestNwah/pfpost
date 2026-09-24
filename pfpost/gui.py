@@ -1073,8 +1073,8 @@ class QueuePanel(QWidget):
     def refresh_runner(self):
         if not scheduler.available():
             self.runner_label.setText(
-                "Background posting needs Windows - run `pfpost queue run` from cron "
-                "or a timer instead.")
+                "Background posting needs Task Scheduler, launchd, systemd or cron, "
+                "and none was found - run `pfpost queue run` on a timer instead.")
             self.runner_button.hide()
             return
         self.runner_worker = Worker(scheduler.status)
@@ -1172,7 +1172,7 @@ class QueuePanel(QWidget):
 
     def _update_runner(self, action, args):
         self.runner_button.setEnabled(False)
-        self.runner_label.setText("Updating Windows Task Scheduler ...")
+        self.runner_label.setText("Updating %s ..." % scheduler.backend_label())
         self.runner_worker = Worker(action, *args)
         self.runner_worker.done.connect(lambda _=None: self.refresh_runner())
         self.runner_worker.failed.connect(self.runner_failed)
@@ -1182,7 +1182,7 @@ class QueuePanel(QWidget):
         self.refresh_runner()
         QMessageBox.critical(
             self, "pfpost",
-            "Could not update the scheduled task.\n\n%s\n\n"
+            "Could not update background posting.\n\n%s\n\n"
             "You can still publish with Run due now." % message)
 
     # -- list -------------------------------------------------------------
