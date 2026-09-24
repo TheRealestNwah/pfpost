@@ -35,7 +35,6 @@ HIDDEN = [
     "keyring.backends.Windows",
     "keyring.backends.chainer",
     "keyring.backends.fail",
-    "win32timezone",
 ]
 
 

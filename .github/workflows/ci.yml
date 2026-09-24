@@ -25,8 +25,8 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip; python -m pip install -r requirements-build.txt
 
-      - name: Lint production code
-        run: python -m ruff check --select F,E9 pfpost build.py pfpost.py
+      - name: Lint production and test code
+        run: python -m ruff check --select F,E9 pfpost build.py pfpost.py test_pfpost.py test_gui.py
 
       - name: Run core tests
         run: python test_pfpost.py
