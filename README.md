@@ -6,7 +6,7 @@ Post to Pixelfed from the command line or a desktop app, now or on a schedule.
 |---|---|
 | ![Compose tab in dark mode: two images with alt text, a caption, visibility, and Post now](docs/screenshots/compose-dark.png) | ![Queue tab in light mode: two pending posts and one posted, each with a status pill](docs/screenshots/queue-light.png) |
 
-<sub>pfpost 1.1.0 in dark and light mode, following your Windows setting. Sample images and account.</sub>
+<sub>pfpost in dark and light mode, following your Windows setting. Sample images and account.</sub>
 
 Works with any Mastodon-compatible Pixelfed instance. Credentials go into your
 operating system's credential store, never into a file in the clear. The core
@@ -437,7 +437,7 @@ A few differences from Windows:
 | Background task result `2147942402` / `0x80070002` | The program the task runs is gone (moved folder, uninstalled Python). Click **Repair background posting** in the app. |
 | `CryptUnprotectData failed` | Credential was created by a different Windows user. Re-run `register`. |
 | `No secure credential store is available` | Install keyring: `pip install keyring`. |
-| `can't open file 'pfpost.py'` | Wrong working directory — `cd "D:\Projects\Pixelfed Poster"` first. |
+| `can't open file 'pfpost.py'` | Wrong working directory — `cd` into the folder that contains `pfpost.py` first. |
 | `&&` is not a valid statement separator | Windows PowerShell 5.1. Use `;`, or run `pwsh`. |
 
 ## Tests
