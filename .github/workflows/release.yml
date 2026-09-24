@@ -1,0 +1,102 @@
+name: Release
+
+# Push a version tag (git tag v1.2.0 && git push origin v1.2.0) to build both
+# executables in CI and attach them to a draft release. The draft gets the
+# download table and checksums; write the rest of the notes, then publish it
+# by hand. Nothing is published automatically.
+#
+# To rebuild an existing tag's draft, run this workflow from the Actions tab
+# and pick the tag under "Use workflow from".
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check tag matches pfpost/__init__.py
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Compare tag and version
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Run this workflow from a version tag, not the $GITHUB_REF_NAME branch"
+            exit 1
+          fi
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' pfpost/__init__.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ \"$version\" in pfpost/__init__.py"
+            exit 1
+          fi
+
+  build:
+    name: Build and test
+    needs: check-version
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Attach to draft release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download tested executables
+        uses: actions/download-artifact@v4
+        with:
+          name: pfpost-windows
+          path: dist
+
+      - name: Write draft notes
+        run: |
+          cd dist
+          gui=$(sha256sum pfpost-gui.exe | cut -d' ' -f1)
+          cli=$(sha256sum pfpost.exe | cut -d' ' -f1)
+          cat > ../notes.md <<EOF
+          <!-- Built by the Release workflow from $GITHUB_SHA: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID -->
+          <!-- Write the summary and changes, then publish. -->
+
+          ## Download
+
+          | File | For |
+          |---|---|
+          | \`pfpost-gui.exe\` | the desktop app |
+          | \`pfpost.exe\` | the command line and background-posting task |
+
+          No Python needed. **Keep both files in the same folder**, and replace both when upgrading. Your account, queue, drafts, and options carry over.
+
+          Windows will warn about an unsigned binary from an unknown publisher. That is expected; this project does not have a code-signing certificate. Build it yourself if you would rather not trust the download (see the README).
+
+          \`\`\`
+          SHA256  pfpost-gui.exe  $gui
+          SHA256  pfpost.exe      $cli
+          \`\`\`
+          EOF
+          cat ../notes.md
+
+      - name: Create or update the draft release
+        run: |
+          if is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$is_draft" != "true" ]; then
+              echo "::error::Release $TAG is already published; not replacing its files"
+              exit 1
+            fi
+            # A re-run replaces the files but keeps any notes already written.
+            gh release upload "$TAG" dist/pfpost.exe dist/pfpost-gui.exe --clobber
+          else
+            gh release create "$TAG" dist/pfpost.exe dist/pfpost-gui.exe \
+              --draft --verify-tag \
+              --title "pfpost ${TAG#v}" \
+              --notes-file notes.md
+          fi

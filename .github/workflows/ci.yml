@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # release.yml calls this workflow so a release ships the exact binaries
+  # that passed the tests and smoke test below, not a separate build.
+  workflow_call:
 
 permissions:
   contents: read
@@ -61,3 +64,13 @@ jobs:
           Get-Process pfpost-gui -ErrorAction SilentlyContinue |
             Where-Object Path -eq (Resolve-Path .\dist\pfpost-gui.exe).Path |
             Stop-Process -Force
+
+      - name: Upload frozen applications
+        uses: actions/upload-artifact@v4
+        with:
+          name: pfpost-windows
+          path: |
+            dist/pfpost.exe
+            dist/pfpost-gui.exe
+          if-no-files-found: error
+          retention-days: 14
