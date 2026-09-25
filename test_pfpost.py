@@ -772,6 +772,40 @@ def main():
     check("future item still pending",
           [i["id"] for i in pfqueue.items()] == [later["id"]])
 
+    print("\n7b. edit and duplicate pending posts")
+    original_path = Path(later["images"][0]["path"])
+    revised = pfqueue.edit(later["id"], images=[(img_b, "replacement alt")],
+                           caption="revised", visibility="private",
+                           when=now + timedelta(days=2), expected_revision=0)
+    check("edit updates post content and time",
+          revised["caption"] == "revised" and revised["visibility"] == "private"
+          and revised["post_at"] != later["post_at"])
+    check("replacement image is staged and retains its alt text",
+          Path(revised["images"][0]["path"]).exists()
+          and revised["images"][0]["alt"] == "replacement alt"
+          and Path(revised["images"][0]["path"]) != img_b)
+    check("the old image survives until the new record is saved", original_path.exists())
+    before = store.load_queue()
+    try:
+        pfqueue.edit(later["id"], images=[(tmp / "missing.png", None)],
+                     caption="lost")
+        check("failed replacement is rejected", False)
+    except pfqueue.QueueError:
+        check("failed replacement is rejected", True)
+    check("failed replacement leaves the original post intact",
+          store.load_queue() == before)
+    try:
+        pfqueue.edit(later["id"], caption="stale", expected_revision=0)
+        check("stale editor is rejected", False)
+    except pfqueue.QueueError:
+        check("stale editor is rejected", True)
+    copy = pfqueue.duplicate(later["id"])
+    check("duplicate has its own staged image and identifier",
+          copy["id"] != later["id"]
+          and Path(copy["images"][0]["path"]).exists()
+          and copy["images"][0]["path"] != revised["images"][0]["path"])
+    pfqueue.remove(copy["id"])
+
     print("\n8. staging and failure handling")
     try:
         pfqueue.add([(tmp / "gone.png", None)], "orphan", "public",
