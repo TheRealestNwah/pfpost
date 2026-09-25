@@ -10,8 +10,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QEvent, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QTextCharFormat
+from PySide6.QtCore import QDateTime, QEvent, QMimeData, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QDrag, QIcon, QPixmap, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
@@ -441,18 +441,25 @@ class ImageTile(QWidget):
     """One image: a rounded thumbnail with a remove button, and its alt text."""
 
     removed = Signal(object)
+    move_requested = Signal(object, int)
+    dropped_on = Signal(object, object)
+    DRAG_TYPE = "application/x-pfpost-image-tile"
     WIDTH, HEIGHT = 196, 140
 
     def __init__(self, path: Path, tokens: dict, parent=None):
         super().__init__(parent)
         self.path = path
         self.setFixedWidth(self.WIDTH)
+        self.setAcceptDrops(True)
+        self._drag_start = None
 
         self.thumb = QLabel()
         self.thumb.setObjectName("thumb")
         self.thumb.setFixedSize(self.WIDTH, self.HEIGHT)
         self.thumb.setAlignment(Qt.AlignCenter)
         self.thumb.setToolTip(str(path))
+        self.thumb.setCursor(Qt.OpenHandCursor)
+        self.thumb.installEventFilter(self)
         pixmap = QPixmap(str(path))
         if pixmap.isNull():          # video, or a format Qt cannot decode
             self.thumb.setText(path.name)
@@ -470,6 +477,22 @@ class ImageTile(QWidget):
         self.remove_button.clicked.connect(lambda: self.removed.emit(self))
 
         caption = styled_label("Alt text", "hint")
+        self.move_left = QToolButton()
+        self.move_left.setText("←")
+        self.move_left.setToolTip("Move image left")
+        self.move_left.setAccessibleName("Move image left")
+        self.move_left.clicked.connect(lambda: self.move_requested.emit(self, -1))
+        self.move_right = QToolButton()
+        self.move_right.setText("→")
+        self.move_right.setToolTip("Move image right")
+        self.move_right.setAccessibleName("Move image right")
+        self.move_right.clicked.connect(lambda: self.move_requested.emit(self, 1))
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.addWidget(caption)
+        controls.addStretch()
+        controls.addWidget(self.move_left)
+        controls.addWidget(self.move_right)
         self.alt = QLineEdit()
         self.alt.setPlaceholderText("Describe this image")
         caption.setBuddy(self.alt)
@@ -478,8 +501,39 @@ class ImageTile(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         layout.addWidget(self.thumb)
-        layout.addWidget(caption)
+        layout.addLayout(controls)
         layout.addWidget(self.alt)
+
+    def eventFilter(self, watched, event):
+        if watched is self.thumb:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._drag_start = event.position().toPoint()
+            elif event.type() == QEvent.MouseMove and self._drag_start is not None \
+                    and event.buttons() & Qt.LeftButton:
+                if (event.position().toPoint() - self._drag_start).manhattanLength() \
+                        >= QApplication.startDragDistance():
+                    self._drag_start = None
+                    drag = QDrag(self)
+                    data = QMimeData()
+                    data.setData(self.DRAG_TYPE, b"tile")
+                    drag.setMimeData(data)
+                    drag.setPixmap(self.thumb.grab())
+                    drag.exec(Qt.MoveAction)
+                    return True
+            elif event.type() == QEvent.MouseButtonRelease:
+                self._drag_start = None
+        return super().eventFilter(watched, event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(self.DRAG_TYPE) and isinstance(event.source(), ImageTile):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        source = event.source()
+        if isinstance(source, ImageTile) and source is not self \
+                and event.mimeData().hasFormat(self.DRAG_TYPE):
+            self.dropped_on.emit(source, self)
+            event.acceptProposedAction()
 
     def alt_text(self) -> str | None:
         return self.alt.text().strip() or None
@@ -628,9 +682,34 @@ class Composer(QWidget):
         for path in paths:
             tile = ImageTile(Path(path), self.tokens)
             tile.removed.connect(self.remove_tile)
+            tile.move_requested.connect(self.move_tile)
+            tile.dropped_on.connect(self.drop_tile)
             self.strip.insertWidget(len(self.tiles), tile, 0, Qt.AlignTop)
             self.tiles.append(tile)
+        self.update_tile_controls()
         self.update_counter()
+
+    def update_tile_controls(self):
+        for index, tile in enumerate(self.tiles):
+            tile.move_left.setEnabled(index > 0)
+            tile.move_right.setEnabled(index < len(self.tiles) - 1)
+
+    def move_tile(self, tile: ImageTile, offset: int):
+        if tile not in self.tiles:
+            return
+        index = self.tiles.index(tile)
+        target = index + offset
+        if target < 0 or target >= len(self.tiles):
+            return
+        self.tiles.pop(index)
+        self.tiles.insert(target, tile)
+        self.strip.removeWidget(tile)
+        self.strip.insertWidget(target, tile, 0, Qt.AlignTop)
+        self.update_tile_controls()
+
+    def drop_tile(self, source: ImageTile, target: ImageTile):
+        if source in self.tiles and target in self.tiles and source is not target:
+            self.move_tile(source, self.tiles.index(target) - self.tiles.index(source))
 
     def remove_tile(self, tile: ImageTile):
         if tile in self.tiles:
@@ -639,6 +718,7 @@ class Composer(QWidget):
             tile.hide()
             tile.setParent(None)
             tile.deleteLater()
+            self.update_tile_controls()
 
     def images(self):
         return [(tile.path, tile.alt_text()) for tile in self.tiles]
