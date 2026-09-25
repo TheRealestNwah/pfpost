@@ -60,7 +60,7 @@ def main():
     from PySide6.QtGui import QColor, QImage
     from PySide6.QtWidgets import QApplication as _QApp
     from pfpost import theme as pftheme
-    from pfpost.gui import ConnectDialog, MainWindow
+    from pfpost.gui import ConnectDialog, MainWindow, QueueEditDialog
     from pfpost.session import Session
 
     TOKENS = pftheme.tokens(dark=False)
@@ -683,6 +683,20 @@ def main():
     posted_row = next(r for r in panel.rows if r.item["id"] == done["id"])
     check("a posted row offers Open post", posted_row.action.toolTip() == "Open post")
     check("a pending row offers Remove", panel.rows[0].action.toolTip() == "Remove from queue")
+    check("pending row offers editing and duplication",
+          panel.rows[0].edit_button.text() == "Edit"
+          and panel.rows[0].duplicate_button.text() == "Copy")
+    editor = QueueEditDialog(keep, window.session, limits=composer.limits)
+    check("editor loads queued image, caption and alt text",
+          [(p.name, alt) for p, alt in editor.composer.images()]
+          and editor.composer.images()[0][1] == "alt"
+          and editor.composer.caption.toPlainText() == "still pending")
+    editor.composer.caption.setPlainText("edited in dialog")
+    editor.save()
+    check("editor saves the pending post",
+          next(i for i in pfq.items() if i["id"] == keep["id"])["caption"]
+          == "edited in dialog")
+    panel.reload()
     check("only the first row drops its top rule",
           [r.property("first") for r in panel.rows] == [True, False, False])
     check("the subtitle tallies each status",

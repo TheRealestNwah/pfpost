@@ -245,6 +245,36 @@ def cmd_queue_remove(args):
     print("Removed %s." % args.id)
 
 
+def cmd_queue_edit(args):
+    try:
+        current = next((i for i in pfqueue.items(include_done=True)
+                        if i["id"] == args.id), None)
+        if current is None or current["status"] != "pending":
+            raise pfqueue.QueueError("This post is no longer pending.")
+        if args.images:
+            images = collect_images(args.images, args.alt)
+        elif args.alt:
+            images = collect_images([i["path"] for i in current["images"]], args.alt)
+        else:
+            images = None
+        item = pfqueue.edit(
+            args.id, images=images, caption=args.caption,
+            visibility=args.visibility,
+            when=pfqueue.parse_when(args.at) if args.at else None,
+            expected_revision=current.get("revision", 0))
+    except pfqueue.QueueError as exc:
+        die(exc)
+    print("Updated %s for %s." % (item["id"], pfqueue.local_str(item["post_at"])))
+
+
+def cmd_queue_duplicate(args):
+    try:
+        item = pfqueue.duplicate(args.id, pfqueue.parse_when(args.at) if args.at else None)
+    except pfqueue.QueueError as exc:
+        die(exc)
+    print("Duplicated as %s for %s." % (item["id"], pfqueue.local_str(item["post_at"])))
+
+
 def cmd_queue_run(args):
     session = Session()
 
@@ -436,6 +466,21 @@ def build_parser() -> argparse.ArgumentParser:
     qrm = qsub.add_parser("remove", help="drop a queued post")
     qrm.add_argument("id")
     qrm.set_defaults(func=cmd_queue_remove)
+
+    qedit = qsub.add_parser("edit", help="edit a pending post")
+    qedit.add_argument("id")
+    qedit.add_argument("images", nargs="*", help="replacement images; omit to keep current images")
+    qedit.add_argument("--caption", "-c", help="new caption")
+    qedit.add_argument("--alt", "-a", action="append", default=[],
+                       help="replacement alt text; once for all images or once per image")
+    qedit.add_argument("--visibility", "-v", choices=VISIBILITIES)
+    qedit.add_argument("--at", help="new local time or relative offset")
+    qedit.set_defaults(func=cmd_queue_edit)
+
+    qduplicate = qsub.add_parser("duplicate", help="copy a pending post")
+    qduplicate.add_argument("id")
+    qduplicate.add_argument("--at", help="time for the copy; defaults to original or one hour ahead")
+    qduplicate.set_defaults(func=cmd_queue_duplicate)
 
     qrun = qsub.add_parser("run", help="publish everything that is due")
     qrun.add_argument("--limit", type=int, default=0, help="max posts this run")
