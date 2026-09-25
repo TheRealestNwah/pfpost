@@ -118,6 +118,18 @@ def main():
           str([i[1] for i in images]))
     check("paths read back in order",
           [i[0].name for i in images] == ["a.png", "b.png"])
+    composer.tiles[0].move_right.click()
+    check("move control reorders images and keeps alt text attached",
+          [(p.name, alt) for p, alt in composer.images()]
+          == [("b.png", "Second alt"), ("a.png", "First alt")])
+    check("layout follows the chosen carousel order",
+          composer.strip.itemAt(0).widget() is composer.tiles[0])
+    composer.drop_tile(composer.tiles[1], composer.tiles[0])
+    check("drag destination reorders tiles",
+          [p.name for p, _ in composer.images()] == ["a.png", "b.png"])
+    check("edge move controls are disabled",
+          not composer.tiles[0].move_left.isEnabled()
+          and not composer.tiles[-1].move_right.isEnabled())
     check("blank alt becomes None",
           (composer.tiles[0].alt.setText("  "), composer.images()[0][1])[1] is None)
     composer.tiles[0].alt.setText("First alt")

@@ -166,7 +166,8 @@ pfpost-gui.exe
 ```
 
 Two tabs across the top. **Compose** holds the new post: drop images onto it or
-use **Add images**, give each image its alt text under its thumbnail, write a
+use **Add images**, drag thumbnails to set carousel order (or use their left and
+right move buttons), give each image its alt text under its thumbnail, write a
 caption against a live character counter, pick who sees it, then **Post now**
 or pick a time and **Add to queue**. **Queue** lists what's pending (soonest
 first) and what's been posted, each with a status pill; hover a failed item to
