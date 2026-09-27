@@ -39,10 +39,17 @@ def collect_images(paths, alts):
     return images
 
 
+def session_for(args) -> Session:
+    """The session for --account, or the active account."""
+    if getattr(args, "account", None):
+        return Session(account_id=Session.resolve_account(args.account))
+    return Session()
+
+
 # --------------------------------------------------------------------------
 
 def cmd_register(args):
-    session = Session()
+    session = session_for(args)
     try:
         result = session.register(
             args.instance or session.instance, name=args.name,
@@ -60,7 +67,7 @@ def cmd_register(args):
 
 
 def cmd_auth(args):
-    session = Session()
+    session = session_for(args)
     try:
         token = session.authorize(on_note=note)
     except (AuthError, api.ApiError, store.StorageError) as exc:
@@ -84,7 +91,7 @@ def cmd_auth(args):
 
 
 def cmd_whoami(args):
-    session = Session()
+    session = session_for(args)
     info = session.status()
 
     if not info["configured"]:
@@ -98,6 +105,8 @@ def cmd_whoami(args):
         return
 
     print("Status     connected")
+    if len(Session.accounts()) > 1:
+        print("Account id %s" % session.account_id)
     print("Instance   %s" % info["instance"])
     print("Client     %s" % info["client_id"])
     print("Scopes     %s" % info["scopes"])
@@ -121,7 +130,7 @@ def cmd_whoami(args):
 
 
 def cmd_logout(args):
-    session = Session()
+    session = session_for(args)
     info = session.status()
     if not info["configured"]:
         print("Nothing to disconnect.")
@@ -139,7 +148,7 @@ def cmd_logout(args):
 
 
 def cmd_info(args):
-    session = Session()
+    session = session_for(args)
     if not session.configured:
         die("Not configured. Run:  pfpost register --instance <domain>")
     info = session.public_client().instance_info()
@@ -160,7 +169,7 @@ def cmd_info(args):
 
 
 def cmd_post(args):
-    session = Session()
+    session = session_for(args)
     images = collect_images(args.images, args.alt)
     try:
         limits = session.public_client().limits()
@@ -200,15 +209,20 @@ def cmd_post(args):
 
 
 def cmd_queue_add(args):
+    session = session_for(args)
     images = collect_images(args.images, args.alt)
     try:
         when = pfqueue.parse_when(args.at)
-        item = pfqueue.add(images, args.caption, args.visibility, when)
+        item = pfqueue.add(images, args.caption, args.visibility, when,
+                           account_id=session.account_id)
     except pfqueue.QueueError as exc:
         die(exc)
-    print("Queued %s for %s (%d image%s)."
-          % (item["id"], pfqueue.local_str(item["post_at"]), len(images),
+    print("Queued %s for %s as %s (%d image%s)."
+          % (item["id"], pfqueue.local_str(item["post_at"]), session.label, len(images),
              "" if len(images) == 1 else "s"))
+    if not session.authorized:
+        print("Note: %s is not signed in. The post waits until it is; run "
+              "`pfpost auth`." % session.label, file=sys.stderr)
     note_links(args.caption, args.visibility)
 
 
@@ -227,14 +241,19 @@ def cmd_queue_list(args):
     if not rows:
         print("Queue is empty." if args.all else "Nothing pending.")
         return
-    print("%-9s %-17s %-8s %-5s %s" % ("ID", "POST AT", "STATUS", "IMGS", "CAPTION"))
+    labels = {a["id"]: a["label"] for a in Session.accounts()}
+    many = len(labels) > 1
+    print("%-9s %-17s %-8s %-5s %s%s" % ("ID", "POST AT", "STATUS", "IMGS",
+                                         "%-28s " % "ACCOUNT" if many else "", "CAPTION"))
     for item in rows:
         caption = (item.get("caption") or "").replace("\n", " ")
         if len(caption) > 40:
             caption = caption[:37] + "..."
-        print("%-9s %-17s %-8s %-5d %s"
+        account = labels.get(item.get("account_id"), "(removed account)"
+                             if item.get("account_id") else "(none)")
+        print("%-9s %-17s %-8s %-5d %s%s"
               % (item["id"], pfqueue.local_str(item["post_at"]), item["status"],
-                 len(item["images"]), caption))
+                 len(item["images"]), "%-28s " % account[:28] if many else "", caption))
 
 
 def cmd_queue_remove(args):
@@ -261,7 +280,8 @@ def cmd_queue_edit(args):
             args.id, images=images, caption=args.caption,
             visibility=args.visibility,
             when=pfqueue.parse_when(args.at) if args.at else None,
-            expected_revision=current.get("revision", 0))
+            expected_revision=current.get("revision", 0),
+            account_id=Session.resolve_account(args.post_as) if args.post_as else None)
     except pfqueue.QueueError as exc:
         die(exc)
     print("Updated %s for %s." % (item["id"], pfqueue.local_str(item["post_at"])))
@@ -276,7 +296,7 @@ def cmd_queue_duplicate(args):
 
 
 def cmd_queue_run(args):
-    session = Session()
+    session = session_for(args)
 
     def on_event(kind, item, detail):
         if kind == "start":
@@ -287,7 +307,12 @@ def cmd_queue_run(args):
             print("  failed (attempt %d/%d), will retry next run\n  %s"
                   % (item["attempts"], pfqueue.MAX_ATTEMPTS, detail))
         elif kind == "failed":
+            if not item.get("attempts"):     # refused before starting
+                print("\n--- %s" % item["id"])
             print("  failed permanently\n  %s" % detail)
+        elif kind == "waiting":
+            print("\n--- %s (due %s)\n  waiting: %s"
+                  % (item["id"], pfqueue.local_str(item["post_at"]), detail))
 
     try:
         processed = pfqueue.run(session, limit=args.limit, on_event=on_event)
@@ -379,6 +404,43 @@ def cmd_schedule(args):
     print("Remove    Unregister-ScheduledTask -TaskName '%s' -Confirm:$false" % task)
 
 
+def cmd_account_list(args):
+    for account in Session.accounts():
+        state = ("signed in" if account["connected"] else
+                 "not signed in" if account["configured"] else "not set up")
+        print("%s %-9s %-36s %s" % ("*" if account["active"] else " ", account["id"],
+                                    account["label"], state))
+    print("\n* is used unless a command is given --account.")
+
+
+def cmd_account_add(args):
+    session = Session().add_account()
+    print("Added account %s and made it active." % session.account_id)
+    if args.instance:
+        args.account = session.account_id
+        cmd_register(args)
+    else:
+        print("\nNext:  pfpost register --instance <domain>")
+
+
+def cmd_account_use(args):
+    session = Session().select_account(Session.resolve_account(args.name))
+    print("Now using %s (%s)." % (session.label, session.account_id))
+
+
+def cmd_account_remove(args):
+    account_id = Session.resolve_account(args.name)
+    session = Session(account_id=account_id)
+    pending = pfqueue.pending_for(account_id)
+    remaining = session.remove_account(account_id)
+    print("Removed %s and its stored credentials." % session.label)
+    if pending:
+        print("%d pending post%s queued for it will not be sent. Move them with:\n"
+              "  pfpost queue edit <id> --post-as <account>"
+              % (pending, "" if pending == 1 else "s"))
+    print("Active account: %s (%s)." % (remaining.label, remaining.account_id))
+
+
 def cmd_gui(args):
     try:
         from .gui import main as gui_main
@@ -410,13 +472,34 @@ def build_parser() -> argparse.ArgumentParser:
               pfpost auth
               pfpost post photo.jpg --caption "Morning fog" --alt "Fog over a valley"
 
+            more than one account:
+              pfpost account add --instance pixelfed.art
+              pfpost account list
+              pfpost --account @me@pixelfed.art post photo.jpg
+
             scheduling:
               pfpost queue add photo.jpg --caption "Later" --at "2026-09-10 17:00"
               pfpost queue run
               pfpost schedule
             """))
     parser.add_argument("--version", action="version", version="pfpost %s" % __version__)
+    parser.add_argument("--account", "-A", metavar="ACCOUNT",
+                        help="account to use: id, @user@instance, user or instance "
+                             "(default: the active account)")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    acct = sub.add_parser("account", help="manage several Pixelfed accounts")
+    asub = acct.add_subparsers(dest="account_command", required=True)
+    asub.add_parser("list", help="show saved accounts").set_defaults(func=cmd_account_list)
+    aadd = asub.add_parser("add", help="add an account and make it active")
+    aadd.add_argument("--instance", help="register on this instance straight away")
+    aadd.set_defaults(func=cmd_account_add, name="pfpost", port=None, scopes=None)
+    ause = asub.add_parser("use", help="make an account the active one")
+    ause.add_argument("name", help="id, @user@instance, user or instance")
+    ause.set_defaults(func=cmd_account_use)
+    arm = asub.add_parser("remove", help="forget an account and its credentials")
+    arm.add_argument("name", help="id, @user@instance, user or instance")
+    arm.set_defaults(func=cmd_account_remove)
 
     upd = sub.add_parser("check-update", help="ask GitHub whether a newer release exists")
     upd.set_defaults(func=cmd_check_update)
@@ -475,6 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="replacement alt text; once for all images or once per image")
     qedit.add_argument("--visibility", "-v", choices=VISIBILITIES)
     qedit.add_argument("--at", help="new local time or relative offset")
+    qedit.add_argument("--post-as", metavar="ACCOUNT", help="post it from another account")
     qedit.set_defaults(func=cmd_queue_edit)
 
     qduplicate = qsub.add_parser("duplicate", help="copy a pending post")

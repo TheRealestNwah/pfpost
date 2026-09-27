@@ -54,6 +54,92 @@ def check(label, condition, detail=""):
                            ("  <- " + detail) if detail and not condition else ""))
 
 
+def multi_account_checks(window, image):
+    from datetime import datetime, timedelta, timezone
+    from pfpost import queue as pfq, store
+    from pfpost.gui import QueueEditDialog
+    from pfpost.session import Session
+    from PySide6.QtWidgets import QMessageBox
+
+    print("\n  several accounts")
+    store.save_queue({"items": []})
+    store.save_state({"accounts": {
+        "aaaa": {"instance": "one.social", "client_id": "1", "username": "alice",
+                 "token": "dpapi:bm90LWEtcmVhbC1ibG9i"},   # never read for the menu
+        "bbbb": {"instance": "two.social", "client_id": "2", "username": "bob"}},
+        "active_account": "aaaa"})
+    window.adopt(Session())
+    bar = window.top_bar
+    texts = [a.text() for a in bar.account_actions]
+    check("the account menu lists every account",
+          texts == ["@alice@one.social", "@bob@two.social (signed out)"], str(texts))
+    check("and ticks the active one",
+          [a.isChecked() for a in bar.account_actions] == [True, False])
+    check("Add account and Remove this account are offered",
+          bar.add_account_action in bar.chip_menu.actions()
+          and bar.remove_account_action in bar.chip_menu.actions())
+    check("the composer says which account it posts as",
+          window.composer.account_label.text() == "Posting as @alice@one.social",
+          window.composer.account_label.text())
+
+    bar.account_actions[1].trigger()
+    check("choosing an account switches to it",
+          window.session.account_id == "bbbb" and Session().account_id == "bbbb")
+    check("the chip stays reachable while the chosen account is signed out",
+          not bar.chip.isHidden() and "signed out" in bar.chip.text(), bar.chip.text())
+    check("and the composer follows",
+          window.composer.account_label.text() == "Posting as @bob@two.social")
+
+    window.composer.clear()
+    window._runner_nudged = True          # no "turn on background posting?" prompt
+    window.composer.add_paths([image])
+    window.composer.tiles[-1].alt.setText("alt")
+    window.composer.when.setDateTime(
+        window.composer.when.dateTime().addDays(1))
+    window.composer.do_queue()
+    queued = pfq.items()[-1]
+    check("queueing records the chosen account", queued.get("account_id") == "bbbb")
+    window.queue_panel.reload()
+    row = next(r for r in window.queue_panel.rows if r.item["id"] == queued["id"])
+    meta = [w.text() for w in row.findChildren(type(window.composer.account_label))]
+    check("the queue row names the account", "@bob@two.social" in meta, str(meta))
+
+    editor = QueueEditDialog(queued, window.session)
+    check("the editor preselects the post's account", editor.account.currentData() == "bbbb")
+    editor.account.setCurrentIndex(editor.account.findData("aaaa"))
+    editor.save()
+    check("the editor can move a post to another account",
+          pfq.items()[-1].get("account_id") == "aaaa")
+
+    orphan = pfq.add([(image, "alt")], "orphan", "public",
+                     datetime.now(timezone.utc) + timedelta(days=1), account_id="gone")
+    editor = QueueEditDialog(orphan, window.session)
+    check("a removed account is shown as such, not silently replaced",
+          editor.account.currentData() is None
+          and "Removed" in editor.account.currentText())
+    real_warning = QMessageBox.warning
+    QMessageBox.warning = lambda *args, **kwargs: None
+    try:
+        editor.save()
+    finally:
+        QMessageBox.warning = real_warning
+    check("and saving insists on choosing one",
+          next(i for i in pfq.items() if i["id"] == orphan["id"]).get("account_id") == "gone")
+
+    real_exec = QMessageBox.exec
+    QMessageBox.exec = lambda box: next(
+        b for b in box.buttons() if b.text() == "Remove account").click()
+    try:
+        window.remove_account()
+    finally:
+        QMessageBox.exec = real_exec
+    check("removing the active account falls back to the other",
+          window.session.account_id == "aaaa" and len(Session.accounts()) == 1)
+    check("with one account left the switcher collapses",
+          bar.account_actions == [] and bar.remove_account_action not in bar.chip_menu.actions())
+    store.save_queue({"items": []})
+
+
 def main():
     app = QApplication([])                                    # noqa: F841
     from PySide6.QtCore import QEvent
@@ -1079,6 +1165,8 @@ def main():
               not tick.isNull() and tick.pixelColor(27, 46).alpha() > 0
               and tick.pixelColor(2, 2).alpha() == 0)
     _QApp.instance().setStyleSheet("")
+
+    multi_account_checks(window, a)
 
     print("\n%s" % ("GUI smoke test passed." if not FAILURES
                     else "%d GUI CHECK(S) FAILED: %s" % (len(FAILURES), FAILURES)))

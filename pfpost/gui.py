@@ -271,6 +271,9 @@ class TopBar(QWidget):
     disconnect_requested = Signal()
     open_requested = Signal()
     details_requested = Signal()
+    account_selected = Signal(str)
+    add_account_requested = Signal()
+    remove_account_requested = Signal()
     tab_changed = Signal(int)
 
     def __init__(self, tokens: dict | None = None, parent=None):
@@ -281,6 +284,7 @@ class TopBar(QWidget):
         self.tokens = tokens or theme.tokens(dark=False)
         self._last_state: dict = {"configured": False, "connected": False}
         self._last_username = None
+        self.accounts: list[dict] = []
 
         logo = QLabel()
         logo.setPixmap(theme.rounded_pixmap(QPixmap.fromImage(theme.draw_icon(56)), 28, 28, 0))
@@ -335,14 +339,16 @@ class TopBar(QWidget):
         self.details_action.triggered.connect(self.details_requested)
         self.disconnect_action = QAction("Disconnect", self)
         self.disconnect_action.triggered.connect(self.disconnect_requested)
-        for action in (self.header_action, None, self.open_action, self.details_action,
-                       None, self.disconnect_action):
-            if action is None:
-                self.chip_menu.addSeparator()
-            else:
-                self.chip_menu.addAction(action)
+        self.add_account_action = QAction("Add account ...", self)
+        self.add_account_action.triggered.connect(self.add_account_requested)
+        self.remove_account_action = QAction("Remove this account ...", self)
+        self.remove_account_action.triggered.connect(self.remove_account_requested)
+        self.account_actions: list[QAction] = []
+        self._build_menu()
         self.chip.setMenu(self.chip_menu)
 
+        # With several accounts the chip is how you switch, so a second
+        # account can be reached even while the active one is signed out.
         self.connect_button = QPushButton("Connect account")
         self.connect_button.setProperty("accent", True)
         self.connect_button.setProperty("size", "small")
@@ -360,6 +366,38 @@ class TopBar(QWidget):
         layout.addWidget(self.chip)
         layout.addWidget(self.connect_button)
         self.set_tokens(self.tokens)
+
+    def _build_menu(self):
+        self.chip_menu.clear()
+        self.account_actions = []
+        self.chip_menu.addAction(self.header_action)
+        self.chip_menu.addSeparator()
+        if len(self.accounts) > 1:
+            for account in self.accounts:
+                text = account["label"]
+                if not account["connected"]:
+                    text += " (signed out)"
+                action = QAction(text, self.chip_menu)
+                action.setCheckable(True)
+                action.setChecked(account["active"])
+                action.triggered.connect(
+                    lambda _checked=False, key=account["id"]: self.account_selected.emit(key))
+                self.chip_menu.addAction(action)
+                self.account_actions.append(action)
+        self.chip_menu.addAction(self.add_account_action)
+        self.chip_menu.addSeparator()
+        for action in (self.open_action, self.details_action):
+            self.chip_menu.addAction(action)
+        self.chip_menu.addSeparator()
+        self.chip_menu.addAction(self.disconnect_action)
+        if len(self.accounts) > 1:
+            self.chip_menu.addAction(self.remove_account_action)
+
+    def set_accounts(self, accounts: list[dict]):
+        """Every saved account, for switching; see Session.accounts()."""
+        self.accounts = accounts
+        self._build_menu()
+        self.show_state(self._last_state, self._last_username)
 
     def set_tokens(self, tokens: dict):
         self.tokens = tokens
@@ -399,24 +437,26 @@ class TopBar(QWidget):
     def show_state(self, info: dict, username: str | None = None):
         self._last_state, self._last_username = info, username
         connected = bool(info.get("connected"))
-        self.chip.setVisible(connected)
+        self.chip.setVisible(connected or len(self.accounts) > 1)
         self.connect_button.setVisible(not connected)
         self.open_action.setEnabled(connected)
         self.disconnect_action.setEnabled(bool(info.get("configured")))
+        instance = info.get("instance") or "?"
         if not info.get("configured"):
             self.connect_button.setText("Connect account")
             self.connect_button.setToolTip("Connect a Pixelfed account to start posting")
-            return
-        instance = info.get("instance") or "?"
-        if not connected:
+            who, instance = "New account", ""
+        elif not connected:
             self.connect_button.setText("Sign in")
             self.connect_button.setToolTip("Registered on %s - authorization needed" % instance)
-            return
-        who = "@%s" % username if username else instance
-        self.chip.setText(" " + who)         # the style draws no gap after the icon
-        self.chip.setIcon(QIcon(theme.avatar_pixmap(username or instance, 30)))
-        self.chip.setToolTip("%s on %s" % (who, instance) if username else instance)
-        self.header_action.setText("%s · %s" % (who, instance) if username else instance)
+            who = "@%s" % username if username else instance
+        else:
+            who = "@%s" % username if username else instance
+        suffix = "" if connected else " (signed out)"
+        self.chip.setText(" " + who + suffix)   # the style draws no gap after the icon
+        self.chip.setIcon(QIcon(theme.avatar_pixmap(username or instance or who, 30)))
+        self.chip.setToolTip("%s on %s" % (who, instance) if username else who)
+        self.header_action.setText(("%s · %s" % (who, instance) if username else who) + suffix)
 
     def details_text(self) -> str:
         """Everything the old account bar printed, now on request only."""
@@ -625,11 +665,16 @@ class Composer(QWidget):
         header.addStretch()
         header.addWidget(hint, 0, Qt.AlignBottom)
 
+        # Posting and queueing both use this account; say which, every time.
+        self.account_label = styled_label("", "hint")
+        self.account_label.setObjectName("postingAs")
+
         visibility_row = QHBoxLayout()
         visibility_row.setSpacing(10)
         visibility_row.addWidget(visibility_label)
         visibility_row.addWidget(self.visibility)
         visibility_row.addStretch()
+        visibility_row.addWidget(self.account_label)
 
         footer = QHBoxLayout()
         footer.setSpacing(8)
@@ -739,6 +784,10 @@ class Composer(QWidget):
             self.visibility.setCurrentIndex(index)
 
     # -- state ------------------------------------------------------------
+
+    def show_account(self):
+        self.account_label.setText("Posting as %s" % self.session.label)
+        self.account_label.setToolTip("Switch accounts from the account menu at the top right")
 
     def set_limits(self, limits: dict):
         self.limits = limits or {}
@@ -895,11 +944,14 @@ class Composer(QWidget):
             return
         caption = self.caption.toPlainText()
         visibility = self.visibility_value()
+        # Held for the whole upload: switching accounts meanwhile must not
+        # change who it came from.
+        self._posting_session = session = self.session
         self.busy(True)
-        self.status.emit("Uploading %d file(s) ..." % len(images))
+        self.status.emit("Uploading %d file(s) as %s ..." % (len(images), session.label))
 
         def work():
-            return self.session.client().publish(images, caption, visibility)
+            return session.client().publish(images, caption, visibility)
 
         self.worker = Worker(work)
         self.worker.done.connect(self.post_ok)
@@ -909,7 +961,7 @@ class Composer(QWidget):
     def post_ok(self, result):
         self.busy(False)
         try:
-            self.session.learn_from_status(result)
+            getattr(self, "_posting_session", self.session).learn_from_status(result)
         except Exception:
             pass                # a convenience; never fail a published post over it
         self.clear()
@@ -933,9 +985,11 @@ class Composer(QWidget):
                     "That time is in the past. Queue it to post on the next run?") \
                     != QMessageBox.Yes:
                 return
-        item = pfqueue.add(images, self.caption.toPlainText(), self.visibility_value(), when)
+        item = pfqueue.add(images, self.caption.toPlainText(), self.visibility_value(), when,
+                           account_id=self.session.account_id)
         self.clear()
-        self.queued.emit("Queued for %s" % friendly_time(item["post_at"]))
+        self.queued.emit("Queued for %s as %s" % (friendly_time(item["post_at"]),
+                                                 self.session.label))
 
 
 # --------------------------------------------------------------------------
@@ -966,8 +1020,29 @@ class QueueEditDialog(QDialog):
         if duplicate and scheduled <= datetime.now().astimezone():
             scheduled = datetime.now().astimezone() + timedelta(hours=1)
         self.composer.when.setDateTime(QDateTime(scheduled))
+
+        # Which account publishes it. A removed account stays listed as such
+        # until another is chosen, so the choice is never made silently.
+        self.account = QComboBox()
+        self.account.setItemDelegate(QStyledItemDelegate(self.account))
+        self.account.setAccessibleName("Post as")
+        current = item.get("account_id") or session.account_id
+        accounts = Session.accounts()
+        if current not in {a["id"] for a in accounts}:
+            self.account.addItem("Removed account - choose another", None)
+        for account in accounts:
+            self.account.addItem(account["label"] + ("" if account["connected"]
+                                                     else " (signed out)"), account["id"])
+        self.account.setCurrentIndex(max(self.account.findData(current), 0))
+        self.composer.account_label.hide()
+        account_row = QHBoxLayout()
+        account_row.setContentsMargins(44, 12, 44, 0)
+        account_row.addWidget(styled_label("Post as", "label"))
+        account_row.addWidget(self.account, 1)
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.addLayout(account_row)
         outer.addWidget(self.composer)
         self.resize(740, 640)
 
@@ -978,16 +1053,21 @@ class QueueEditDialog(QDialog):
         when = self.composer.when.dateTime().toPython()
         if when.tzinfo is None:
             when = when.astimezone()
+        account_id = self.account.currentData()
+        if not account_id:
+            QMessageBox.warning(self, "pfpost", "Choose the account to post this from.")
+            return
         try:
             if self.duplicate:
                 pfqueue.add(images, self.composer.caption.toPlainText(),
-                            self.composer.visibility_value(), when)
+                            self.composer.visibility_value(), when, account_id=account_id)
             else:
                 pfqueue.edit(
                     self.item["id"], images=images,
                     caption=self.composer.caption.toPlainText(),
                     visibility=self.composer.visibility_value(), when=when,
-                    expected_revision=self.item.get("revision", 0))
+                    expected_revision=self.item.get("revision", 0),
+                    account_id=account_id)
         except (pfqueue.QueueError, OSError) as exc:
             QMessageBox.critical(self, "pfpost", str(exc))
             return
@@ -1002,7 +1082,8 @@ class QueueRow(QFrame):
     edit_requested = Signal(str)
     duplicate_requested = Signal(str)
 
-    def __init__(self, item: dict, tokens: dict, first: bool, parent=None):
+    def __init__(self, item: dict, tokens: dict, first: bool, parent=None,
+                 account: str | None = None):
         super().__init__(parent)
         self.item = item
         self.setObjectName("queueRow")
@@ -1036,8 +1117,11 @@ class QueueRow(QFrame):
         visibility = next((v for v in VISIBILITIES if v[0] == item.get("visibility")),
                           VISIBILITIES[0])
         count = len(images)
-        for icon, text in ((when_icon, when), (visibility[2], visibility[1]),
-                           (None, "%d image%s" % (count, "" if count == 1 else "s"))):
+        parts = [(when_icon, when), (visibility[2], visibility[1]),
+                 (None, "%d image%s" % (count, "" if count == 1 else "s"))]
+        if account:
+            parts.append((None, account))
+        for icon, text in parts:
             group = QHBoxLayout()
             group.setSpacing(5)
             if icon:
@@ -1057,7 +1141,7 @@ class QueueRow(QFrame):
                             "failed": "Failed"}.get(status, status.title()))
         self.pill.setProperty("pill", status if status in ("pending", "posted", "failed")
                               else "pending")
-        if status == "failed" and item.get("error"):
+        if item.get("error") and (status == "failed" or item.get("next_attempt_at")):
             self.pill.setToolTip(item["error"])
 
         self.action = QToolButton()
@@ -1205,7 +1289,9 @@ class QueuePanel(QWidget):
         if self.worker is not None and self.worker.isRunning():
             return "busy"
         try:
-            if not self.session.status()["connected"]:
+            # Due posts may belong to any saved account, not just the active one.
+            if not (self.session.status()["connected"]
+                    or any(a["connected"] for a in Session.accounts())):
                 return "disconnected"
         except Exception:
             return "disconnected"
@@ -1347,8 +1433,15 @@ class QueuePanel(QWidget):
         pending = [i for i in items if i["status"] == "pending"]
         done = sorted((i for i in items if i["status"] != "pending"),
                       key=lambda i: i.get("posted_at") or i["post_at"], reverse=True)
+        # Name the account only once there is more than one to confuse.
+        accounts = Session.accounts()
+        labels = {a["id"]: a["label"] for a in accounts} if len(accounts) > 1 else {}
         for index, item in enumerate(pending + done):
-            row = QueueRow(item, self.tokens, first=index == 0)
+            account = None
+            if labels:
+                account = labels.get(item.get("account_id"),
+                                     "Removed account" if item.get("account_id") else None)
+            row = QueueRow(item, self.tokens, first=index == 0, account=account)
             row.remove_requested.connect(self.remove_item)
             row.open_requested.connect(self.open_post)
             row.edit_requested.connect(self.edit_item)
@@ -1433,8 +1526,11 @@ class QueuePanel(QWidget):
             return
         posted = sum(1 for i in processed if i["status"] == "posted")
         failed = sum(1 for i in processed if i["status"] == "failed")
-        self.changed.emit("Ran %d item(s): %d posted, %d failed."
-                          % (len(processed), posted, failed))
+        waiting = len(processed) - posted - failed
+        self.changed.emit("Ran %d item(s): %d posted, %d failed%s."
+                          % (len(processed), posted, failed,
+                             ", %d waiting to retry or for an account to sign in" % waiting
+                             if waiting else ""))
 
     def ran_bad(self, message):
         self.changed.emit("Queue run failed.")
@@ -1522,6 +1618,9 @@ class MainWindow(QMainWindow):
         self.top_bar.disconnect_requested.connect(self.disconnect_account)
         self.top_bar.open_requested.connect(self.open_account)
         self.top_bar.details_requested.connect(self.show_connection_details)
+        self.top_bar.account_selected.connect(self.switch_account)
+        self.top_bar.add_account_requested.connect(self.add_account)
+        self.top_bar.remove_account_requested.connect(self.remove_account)
         # A post, from either tab, is how a write-only token learns its name.
         self.queue_panel.changed.connect(lambda _message: self.sync_account_name())
         self.queue_panel.pending_changed.connect(self.top_bar.set_pending)
@@ -1707,7 +1806,9 @@ class MainWindow(QMainWindow):
 
     def refresh_account(self):
         info = self.session.status()
+        self.top_bar.set_accounts(Session.accounts())
         self.top_bar.show_state(info, self.session.state.get("username"))
+        self.composer.show_account()
         self.composer.set_enabled(info["connected"])
         if not info["connected"]:
             self.say("Not connected - use Connect account at the top right")
@@ -1775,11 +1876,50 @@ class MainWindow(QMainWindow):
         self.say("Disconnected from %s." % info["instance"])
 
     def adopt(self, session: Session):
-        """Swap in a fresh session after connect/disconnect."""
+        """Swap in a fresh session after connect/disconnect or a switch."""
         self.session = session
         self.composer.session = session
         self.queue_panel.session = session
         self.refresh_account()
+        self.queue_panel.reload()
+
+    def switch_account(self, account_id: str):
+        if account_id == self.session.account_id:
+            return
+        self.adopt(self.session.select_account(account_id))
+        self.say("Now posting as %s" % self.session.label)
+
+    def add_account(self):
+        previous = self.session.account_id
+        fresh = self.session.add_account()
+        dialog = ConnectDialog(fresh, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.adopt(Session(account_id=fresh.account_id))
+            return
+        # Cancelled: leave no empty account behind, and go back to where we were.
+        fresh.remove_account(fresh.account_id)
+        self.adopt(Session().select_account(previous))
+
+    def remove_account(self):
+        session = self.session
+        pending = pfqueue.pending_for(session.account_id)
+        detail = ("Its stored credentials are deleted from this machine.")
+        if pending:
+            detail += ("\n\n%d pending post%s queued for it will not be sent. Edit "
+                       "them in the queue to choose another account."
+                       % (pending, "" if pending == 1 else "s"))
+        box = QMessageBox(self)
+        box.setWindowTitle("Remove account")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("Remove %s from pfpost?" % session.label)
+        box.setInformativeText(detail)
+        remove = box.addButton("Remove account", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is not remove:
+            return
+        self.adopt(session.remove_account(session.account_id))
+        self.say("Removed %s. Now posting as %s." % (session.label, self.session.label))
 
 
 def apply_theme(app) -> dict:

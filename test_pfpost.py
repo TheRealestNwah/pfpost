@@ -532,6 +532,145 @@ def posix_scheduler_checks(sched, cli):
             setattr(sched, key, value)
 
 
+def multi_account_checks(host, image):
+    import contextlib
+    import io
+    from pfpost import cli as pfcli
+    from pfpost.session import AuthError, LEGACY_ACCOUNT
+
+    def statuses_by_token():
+        return [r[2] for r in RECEIVED if r[1] == "/api/v1/statuses"]
+
+    def token_payload(access):
+        return json.dumps({"access_token": access, "refresh_token": None,
+                           "expires_at": (datetime.now(timezone.utc)
+                                          + timedelta(days=300)).isoformat()})
+
+    print("\n14. several accounts")
+    now = datetime.now(timezone.utc)
+    legacy = {"instance": host, "client_id": "1", "scopes": "read write",
+              "token": store.store_secret("token", token_payload("tok_legacy"))}
+    store.save_state(legacy)
+    store.save_queue({"items": []})
+    old_pending = pfqueue.add([(image, None)], "queued before the upgrade", "public",
+                              now + timedelta(days=1))
+    raw = store.load_queue()
+    raw["items"].append({"id": "donedone", "status": "posted", "images": [],
+                         "post_at": now.isoformat(), "caption": "", "visibility": "public"})
+    store.save_queue(raw)
+
+    first = Session()
+    check("an old single-account state.json is migrated in place",
+          "accounts" in store.load_state()
+          and store.load_state()["accounts"][LEGACY_ACCOUNT]["client_id"] == "1")
+    check("the migrated account keeps its stored token",
+          first.access_token() == "tok_legacy")
+    by_id = {i["id"]: i for i in store.load_queue()["items"]}
+    check("pending posts from before the upgrade are pinned to that account",
+          by_id[old_pending["id"]].get("account_id") == LEGACY_ACCOUNT)
+    check("finished posts are left alone", "account_id" not in by_id["donedone"])
+    Session()
+    check("migration is idempotent", len(Session.accounts()) == 1)
+
+    second = first.add_account()
+    check("adding an account makes it active",
+          Session().account_id == second.account_id and second.account_id != LEGACY_ACCOUNT)
+    second.state.update({"instance": host, "client_id": "2", "scopes": "read write"})
+    second._store_token({"access_token": "tok_second", "expires_in": 31536000})
+    first = Session(account_id=LEGACY_ACCOUNT)
+    check("each account keeps its own token", first.access_token() == "tok_legacy"
+          and Session(account_id=second.account_id).access_token() == "tok_second")
+    check("tokens are stored under separate names",
+          first.state["token"] != Session(account_id=second.account_id).state["token"])
+    listed = Session.accounts()
+    check("both accounts are listed, the new one active",
+          [a["id"] for a in listed if a["active"]] == [second.account_id]
+          and len(listed) == 2, str(listed))
+
+    first.remember_username("alice")
+    Session(account_id=second.account_id).remember_username("bob")
+    check("an account resolves by @user@instance",
+          Session.resolve_account("@bob@%s" % host) == second.account_id)
+    check("an account resolves by id", Session.resolve_account(LEGACY_ACCOUNT) == LEGACY_ACCOUNT)
+    try:
+        Session.resolve_account(host)
+        check("an instance shared by two accounts is ambiguous", False)
+    except AuthError as exc:
+        check("an instance shared by two accounts is ambiguous", "Ambiguous" in str(exc))
+
+    print("\n14b. each queued post goes out from its own account")
+    store.save_queue({"items": []})
+    pfqueue.add([(image, None)], "from alice", "public", now - timedelta(minutes=2),
+                account_id=LEGACY_ACCOUNT)
+    pfqueue.add([(image, None)], "from bob", "public", now - timedelta(minutes=1),
+                account_id=second.account_id)
+    RECEIVED.clear()
+    processed = pfqueue.run(Session())            # the active account is bob
+    check("both due posts published", [i["status"] for i in processed] == ["posted", "posted"],
+          str([i.get("error") for i in processed]))
+    check("alice's post used alice's token and bob's used bob's",
+          statuses_by_token() == ["Bearer tok_legacy", "Bearer tok_second"],
+          str(statuses_by_token()))
+
+    store.save_queue({"items": []})
+    signed_out = Session(account_id=LEGACY_ACCOUNT)
+    signed_out.disconnect(forget_client=False)
+    waiting = pfqueue.add([(image, None)], "alice is signed out", "public",
+                          now - timedelta(minutes=1), account_id=LEGACY_ACCOUNT)
+    events = []
+    RECEIVED.clear()
+    pfqueue.run(Session(), on_event=lambda kind, item, detail: events.append(kind))
+    live = next(i for i in store.load_queue()["items"] if i["id"] == waiting["id"])
+    check("a signed-out account's post waits instead of using another account",
+          live["status"] == "pending" and statuses_by_token() == [] and events == ["waiting"],
+          str(events))
+    check("waiting spends no attempt and backs off",
+          live.get("attempts") == 0 and pfqueue.retry_at(live) > now)
+    moved = pfqueue.edit(waiting["id"], account_id=second.account_id)
+    check("editing a post can move it to another account",
+          moved["account_id"] == second.account_id and "next_attempt_at" not in moved)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        pfcli.main(["account", "list"])
+    check("`account list` shows both accounts and marks the active one",
+          "  %s" % LEGACY_ACCOUNT in out.getvalue()
+          and "* %s" % second.account_id in out.getvalue(),
+          out.getvalue())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        pfcli.main(["--account", LEGACY_ACCOUNT, "queue", "add", str(image),
+                    "--at", "+2h"])
+    newest = store.load_queue()["items"][-1]
+    check("`--account` pins a queued post to the chosen account",
+          newest.get("account_id") == LEGACY_ACCOUNT, out.getvalue())
+
+    store.save_queue({"items": []})
+    orphan = pfqueue.add([(image, None)], "for bob", "public", now - timedelta(minutes=1),
+                         account_id=second.account_id)
+    check("pending posts are counted per account", pfqueue.pending_for(second.account_id) == 1)
+    remaining = Session().remove_account(second.account_id)
+    check("removing the active account falls back to another",
+          remaining.account_id == LEGACY_ACCOUNT and len(Session.accounts()) == 1)
+    check("removing an account forgets its token",
+          ("pfpost", "token:%s" % second.account_id) not in TEST_KEYRING.values)
+    RECEIVED.clear()
+    pfqueue.run(Session())
+    live = next(i for i in store.load_queue()["items"] if i["id"] == orphan["id"])
+    check("a removed account's post fails rather than going out from another",
+          live["status"] == "failed" and "removed" in live["error"]
+          and statuses_by_token() == [], live.get("error", ""))
+
+    store.save_queue({"items": []})
+    Session().add_account()
+    pfqueue.add([(image, None)], "whose?", "public", now - timedelta(minutes=1))
+    processed = pfqueue.run(Session())
+    check("with several accounts, a post without one is never guessed",
+          processed and processed[0]["status"] == "failed"
+          and "No account" in processed[0]["error"])
+    store.save_queue({"items": []})
+
+
 def main():
     server = HTTPServer(("127.0.0.1", PORT), MockPixelfed)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1180,6 +1319,8 @@ def main():
         pass
     check("pfpost --version prints the version",
           out.getvalue().strip() == "pfpost %s" % __version__, out.getvalue())
+
+    multi_account_checks(host, img_a)
 
     server.shutdown()
     print("\n%s" % ("All checks passed." if not FAILURES[0]

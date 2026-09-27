@@ -56,9 +56,131 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
+LEGACY_ACCOUNT = "default"
+
+
+def _as_document(raw: dict) -> dict:
+    """state.json holds {"accounts": {id: state}, "active_account": id}.
+
+    Older builds wrote a single account's state at the top level; that becomes
+    the one account, with its credential references untouched.
+    """
+    document = raw if "accounts" in raw else {
+        "accounts": {LEGACY_ACCOUNT: raw}, "active_account": LEGACY_ACCOUNT}
+    if not document["accounts"]:
+        document["accounts"][LEGACY_ACCOUNT] = {}
+    if document.get("active_account") not in document["accounts"]:
+        document["active_account"] = next(iter(document["accounts"]))
+    return document
+
+
+def migrate() -> None:
+    """Convert a single-account state.json in place.
+
+    Pending posts are stamped with that account first, so a later switch can
+    never send them from someone else. Safe to repeat if interrupted.
+    """
+    raw = store.load_state()
+    if not raw or "accounts" in raw:
+        return
+    queue = store.load_queue()
+    unowned = [i for i in queue["items"]
+               if i.get("status") == "pending" and not i.get("account_id")]
+    for item in unowned:
+        item["account_id"] = LEGACY_ACCOUNT
+    if unowned:
+        store.save_queue(queue)
+    store.save_state(_as_document(raw))
+
+
+def account_label(state: dict) -> str:
+    instance, username = state.get("instance"), state.get("username")
+    if instance and username:
+        return "@%s@%s" % (username, instance)
+    return instance or "New account"
+
+
 class Session:
-    def __init__(self, state: dict | None = None):
-        self.state = state if state is not None else store.load_state()
+    def __init__(self, state: dict | None = None, account_id: str | None = None):
+        if state is None:
+            migrate()
+            state = store.load_state()
+        self._document = _as_document(state)
+        accounts = self._document["accounts"]
+        self.account_id = account_id or self._document["active_account"]
+        if self.account_id not in accounts:
+            raise AuthError("Unknown account %s. Run `pfpost account list`." % self.account_id)
+        self.state = accounts[self.account_id]
+
+    # -- accounts ---------------------------------------------------------
+
+    @staticmethod
+    def _saved_document() -> dict:
+        migrate()
+        return _as_document(store.load_state())
+
+    @staticmethod
+    def accounts() -> list[dict]:
+        """Every saved account, without touching the network or secrets."""
+        document = Session._saved_document()
+        return [{"id": key, "label": account_label(value),
+                 "instance": value.get("instance"), "username": value.get("username"),
+                 "configured": bool(value.get("instance") and value.get("client_id")),
+                 "connected": bool(value.get("token")),
+                 "active": key == document["active_account"]}
+                for key, value in document["accounts"].items()]
+
+    @staticmethod
+    def resolve_account(text: str) -> str:
+        """An account id from an id, @user@instance, user@instance, user or instance."""
+        wanted = (text or "").strip().lstrip("@").lower()
+        accounts = Session.accounts()
+        for account in accounts:
+            if account["id"].lower() == wanted:
+                return account["id"]
+        matches = [a["id"] for a in accounts if wanted in {
+            (a["label"] or "").lstrip("@").lower(), (a["instance"] or "").lower(),
+            (a["username"] or "").lower()}]
+        if len(matches) == 1:
+            return matches[0]
+        known = ", ".join("%s (%s)" % (a["id"], a["label"]) for a in accounts)
+        raise AuthError("%s account %r. Known accounts: %s"
+                        % ("Ambiguous" if matches else "No", text, known))
+
+    @property
+    def label(self) -> str:
+        return account_label(self.state)
+
+    def add_account(self) -> "Session":
+        """Create an empty account, make it active and return its session."""
+        document = self._saved_document()
+        account_id = uuid.uuid4().hex[:8]
+        document["accounts"][account_id] = {}
+        document["active_account"] = account_id
+        store.save_state(document)
+        return Session(account_id=account_id)
+
+    def select_account(self, account_id: str) -> "Session":
+        document = self._saved_document()
+        if account_id not in document["accounts"]:
+            raise AuthError("Unknown account %s." % account_id)
+        document["active_account"] = account_id
+        store.save_state(document)
+        return Session(account_id=account_id)
+
+    def remove_account(self, account_id: str) -> "Session":
+        """Forget an account and its credentials; returns the now-active session.
+
+        Its pending posts stay queued and are refused at run time rather than
+        sent from whichever account happens to be left.
+        """
+        if account_id not in self._saved_document()["accounts"]:
+            raise AuthError("Unknown account %s." % account_id)
+        Session(account_id=account_id).disconnect()
+        document = self._saved_document()
+        document["accounts"].pop(account_id, None)
+        store.save_state(_as_document(document))
+        return Session()
 
     # -- configuration ----------------------------------------------------
 
@@ -87,7 +209,11 @@ class Session:
         return self.state.get("redirect_uri") or "http://localhost:%d/callback" % port
 
     def save(self) -> None:
-        store.save_state(self.state)
+        # Merge into what is on disk: another account may have changed since.
+        raw = store.load_state()
+        document = _as_document(raw) if "accounts" in raw else self._document
+        document["accounts"][self.account_id] = self.state
+        store.save_state(document)
 
     # -- registration -----------------------------------------------------
 
@@ -126,7 +252,7 @@ class Session:
         self.state.update({
             "instance": instance,
             "client_id": str(result["client_id"]),
-            "client_secret": store.store_secret("client_secret", secret),
+            "client_secret": store.store_secret("client_secret:%s" % self.account_id, secret),
             "redirect_port": port,
             "redirect_uri": redirect,
             "scopes": scopes,
@@ -210,8 +336,12 @@ class Session:
             "refresh_token": token_response.get("refresh_token"),
             "expires_at": api.token_expiry(token_response),
         }
-        self.state["token"] = store.store_secret("token", json.dumps(payload))
+        old = self.state.get("token")
+        self.state["token"] = store.store_secret("token:%s" % self.account_id,
+                                                  json.dumps(payload))
         self.save()
+        if old and old != self.state["token"]:
+            store.forget_secret(old)
 
     def _token_payload(self) -> dict:
         if not self.state.get("token"):
