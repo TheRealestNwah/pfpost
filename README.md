@@ -260,6 +260,33 @@ token-revocation endpoint**, so the token stays valid on the server until you
 revoke it under `Settings > Applications` on your instance. Both the CLI and the
 dialog say so and link there rather than implying a full sign-out.
 
+## Several accounts
+
+```
+pfpost.exe account add --instance pixelfed.art    # add, make active, register
+pfpost.exe auth
+pfpost.exe account list                           # * marks the active account
+pfpost.exe account use @me@pixelfed.social
+pfpost.exe --account @me@pixelfed.art post photo.jpg --caption "Elsewhere"
+pfpost.exe queue edit <id> --post-as @me@pixelfed.social
+pfpost.exe account remove @me@pixelfed.art
+```
+
+Every command uses the active account unless given `--account`, which takes an
+account id, `@user@instance`, `user` or `instance`. Each account's client secret
+and token are stored separately.
+
+A queued post remembers the account it was queued from and is only ever sent
+from that one. If that account is signed out, the post waits (without using up
+a retry) until it is signed back in; if it was removed, the post fails with a
+note to pick another account. Posts queued before upgrading are pinned to the
+account that existed then.
+
+In the desktop app the account chip's menu lists every account to switch
+between, with **Add account** and **Remove this account**. The composer shows
+**Posting as …**, the queue names each post's account once there is more than
+one, and **Edit** can move a pending post to another account.
+
 ## Posting
 
 ```

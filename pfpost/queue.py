@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import api, store
+from .session import AuthError, Session
 
 MAX_ATTEMPTS = 3
 # Wait this long after each failed attempt. Without a backoff, a runner that
@@ -59,7 +60,8 @@ def local_str(iso: str) -> str:
         return iso
 
 
-def add(images, caption: str, visibility: str, when: datetime) -> dict:
+def add(images, caption: str, visibility: str, when: datetime,
+        account_id: str | None = None) -> dict:
     """Queue a post, copying its images somewhere they cannot move or change.
 
     The originals stay where they are; `original` is kept only so the UI can
@@ -90,6 +92,8 @@ def add(images, caption: str, visibility: str, when: datetime) -> dict:
         "status": "pending",
         "attempts": 0,
     }
+    if account_id:
+        item["account_id"] = account_id
     queue = store.load_queue()
     queue["items"].append(item)
     store.save_queue(queue)
@@ -98,7 +102,7 @@ def add(images, caption: str, visibility: str, when: datetime) -> dict:
 
 def edit(item_id: str, *, images=None, caption: str | None = None,
          visibility: str | None = None, when: datetime | None = None,
-         expected_revision: int | None = None) -> dict:
+         expected_revision: int | None = None, account_id: str | None = None) -> dict:
     """Update a pending item after safely staging replacement media.
 
     None for images keeps the existing staged copies. Supplying images copies
@@ -153,6 +157,8 @@ def edit(item_id: str, *, images=None, caption: str | None = None,
             live["visibility"] = visibility
         if when is not None:
             live["post_at"] = when.astimezone(timezone.utc).isoformat()
+        if account_id is not None:
+            live["account_id"] = account_id
         if new_images is not None:
             live["images"] = new_images
         live["revision"] = live.get("revision", 0) + 1
@@ -176,7 +182,8 @@ def duplicate(item_id: str, when: datetime | None = None) -> dict:
         raise QueueError("The images for this post are no longer available.")
     original_time = datetime.fromisoformat(item["post_at"])
     return add(images, item["caption"], item["visibility"],
-               when or max(original_time, datetime.now(timezone.utc) + timedelta(hours=1)))
+               when or max(original_time, datetime.now(timezone.utc) + timedelta(hours=1)),
+               account_id=item.get("account_id"))
 
 
 def items(include_done: bool = False) -> list[dict]:
@@ -245,6 +252,11 @@ def prune_staged() -> int:
     return removed
 
 
+def pending_for(account_id: str) -> int:
+    return sum(1 for i in store.load_queue()["items"]
+               if i["status"] == "pending" and i.get("account_id") == account_id)
+
+
 def counts() -> dict:
     tally = {"pending": 0, "posted": 0, "failed": 0}
     for item in store.load_queue()["items"]:
@@ -276,8 +288,33 @@ def due(now: datetime | None = None) -> list[dict]:
     return ready
 
 
+def _session_for(item: dict, session):
+    """The session to publish an item with: (session, problem, fatal).
+
+    Never falls back to a different account than the one the post was queued
+    for. `session` is reused when it is that account, so callers can pass one
+    whose state is already loaded.
+    """
+    known = {a["id"]: a for a in Session.accounts()}
+    account_id = item.get("account_id")
+    if not account_id:
+        if len(known) > 1:
+            return None, ("No account is recorded for this post. Edit it and "
+                          "choose one."), True
+        return session, None, False
+    if account_id == session.account_id:
+        return session, None, False
+    if account_id not in known:
+        return None, ("The account this post was queued for has been removed. "
+                      "Edit it and choose another."), True
+    return Session(account_id=account_id), None, False
+
+
 def run(session, limit: int = 0, on_event=None) -> list[dict]:
     """Publish everything due. on_event(kind, item, detail) for progress.
+
+    Each post goes out from the account it was queued for. Kinds: start,
+    posted, retry, failed, and waiting - its account needs signing in again.
 
     Each item is saved as it completes, so an interrupted run never loses work.
     """
@@ -291,14 +328,38 @@ def run(session, limit: int = 0, on_event=None) -> list[dict]:
     if not pending:
         return []
 
-    client = session.client()
-    limits = client.limits()
     processed = []
+    connections = {}            # account id -> (client, limits), once per run
 
     for item in pending:
         queue = store.load_queue()
         live = next((i for i in queue["items"] if i["id"] == item["id"]), None)
         if live is None or live["status"] != "pending":
+            continue
+
+        posting_session, problem, fatal = _session_for(live, session)
+        if problem is None:
+            try:
+                if posting_session.account_id not in connections:
+                    client = posting_session.client()
+                    connections[posting_session.account_id] = (client, client.limits())
+                client, limits = connections[posting_session.account_id]
+            except (AuthError, store.StorageError) as exc:
+                problem = "%s is not signed in (%s)" % (posting_session.label, exc)
+        if problem is not None:
+            live["error"] = problem
+            if fatal:
+                live["status"] = "failed"
+                live.pop("next_attempt_at", None)
+                emit("failed", live, problem)
+            else:
+                # Not an attempt: nothing was sent. Wait for the account to be
+                # signed back in rather than post from a different one.
+                live["next_attempt_at"] = (datetime.now(timezone.utc) + timedelta(
+                    seconds=RETRY_BACKOFF_SECONDS[-1])).isoformat()
+                emit("waiting", live, problem)
+            store.save_queue(queue)
+            processed.append(live)
             continue
 
         emit("start", live)
@@ -317,7 +378,7 @@ def run(session, limit: int = 0, on_event=None) -> list[dict]:
             api.validate(images, live["caption"], limits)
             result = client.publish(images, live["caption"], live["visibility"])
             try:
-                session.learn_from_status(result)
+                posting_session.learn_from_status(result)
             except Exception:
                 pass            # a convenience; never fail a published post over it
             live["status"] = "posted"
