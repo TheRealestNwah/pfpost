@@ -96,6 +96,89 @@ def add(images, caption: str, visibility: str, when: datetime) -> dict:
     return item
 
 
+def edit(item_id: str, *, images=None, caption: str | None = None,
+         visibility: str | None = None, when: datetime | None = None,
+         expected_revision: int | None = None) -> dict:
+    """Update a pending item after safely staging replacement media.
+
+    None for images keeps the existing staged copies. Supplying images copies
+    them into a new revision folder before the queue record is changed.
+    """
+    queue = store.load_queue()
+    item = next((i for i in queue["items"] if i["id"] == item_id), None)
+    if item is None or item["status"] != "pending":
+        raise QueueError("This post is no longer pending; reload the queue.")
+    if expected_revision is not None and item.get("revision", 0) != expected_revision:
+        raise QueueError("This post changed while you were editing; reload it.")
+    if visibility is not None and visibility not in ("public", "unlisted", "private"):
+        raise QueueError("Unknown visibility: %s" % visibility)
+    new_images = None
+    revision_dir = None
+    if images is not None:
+        if not images:
+            raise QueueError("Add at least one image.")
+        item_dir = store.staged_dir(item_id)
+        revision_dir = item_dir / uuid.uuid4().hex
+        try:
+            new_images = []
+            for index, (path, alt) in enumerate(images):
+                source = Path(path)
+                if not source.is_file():
+                    raise QueueError("File not found: %s" % source)
+                if source.resolve().is_relative_to(item_dir.resolve()):
+                    target = source
+                else:
+                    revision_dir.mkdir(exist_ok=True)
+                    target = revision_dir / ("%02d_%s" % (index, source.name))
+                    shutil.copy2(source, target)
+                new_images.append({"path": str(target), "alt": alt,
+                                   "original": next(
+                                       (old.get("original", str(source)) for old in item["images"]
+                                        if old["path"] == str(source)), str(source))})
+        except (OSError, QueueError) as exc:
+            shutil.rmtree(revision_dir, ignore_errors=True)
+            raise QueueError("Could not stage replacement images: %s" % exc)
+
+    try:
+        # A background run or another editor may have changed the item while
+        # the image copies were being prepared.
+        queue = store.load_queue()
+        live = next((i for i in queue["items"] if i["id"] == item_id), None)
+        if live is None or live["status"] != "pending" or \
+                live.get("revision", 0) != item.get("revision", 0):
+            raise QueueError("This post changed while you were editing; reload it.")
+        if caption is not None:
+            live["caption"] = caption
+        if visibility is not None:
+            live["visibility"] = visibility
+        if when is not None:
+            live["post_at"] = when.astimezone(timezone.utc).isoformat()
+        if new_images is not None:
+            live["images"] = new_images
+        live["revision"] = live.get("revision", 0) + 1
+        live["attempts"] = 0
+        live.pop("next_attempt_at", None)
+        live.pop("error", None)
+        store.save_queue(queue)
+        return live
+    except Exception:
+        if revision_dir is not None:
+            shutil.rmtree(revision_dir, ignore_errors=True)
+        raise
+
+
+def duplicate(item_id: str, when: datetime | None = None) -> dict:
+    item = next((i for i in store.load_queue()["items"] if i["id"] == item_id), None)
+    if item is None or item["status"] != "pending":
+        raise QueueError("Only pending posts with staged images can be duplicated.")
+    images = [(Path(i["path"]), i.get("alt")) for i in item["images"]]
+    if any(not path.is_file() for path, _ in images):
+        raise QueueError("The images for this post are no longer available.")
+    original_time = datetime.fromisoformat(item["post_at"])
+    return add(images, item["caption"], item["visibility"],
+               when or max(original_time, datetime.now(timezone.utc) + timedelta(hours=1)))
+
+
 def items(include_done: bool = False) -> list[dict]:
     rows = store.load_queue()["items"]
     if not include_done:

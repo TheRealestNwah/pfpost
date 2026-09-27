@@ -317,6 +317,17 @@ touched by it — cancelling a scheduled post is deliberate, so that is what eac
 row's remove button is for, and it asks before cancelling anything still
 pending. Posted rows have an **Open post** button instead.
 
+Pending rows also have **Edit** and **Copy**. Edit opens the composer with the
+saved images, alt text, caption, visibility and time; Save changes updates the
+same queue item. Copy opens the same form and creates a separate queued post.
+If a background run posts the item while its editor is open, saving asks you to
+reload instead of recreating a post that has already gone out.
+
+From the command line, use `pfpost.exe queue edit ID --caption "New caption"
+--at +2h`, optionally providing replacement image paths and `--alt` values.
+`pfpost.exe queue duplicate ID` creates a separate pending copy; use `--at` to
+choose its time.
+
 Publish everything due:
 
 ```

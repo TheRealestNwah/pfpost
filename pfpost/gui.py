@@ -7,7 +7,7 @@ logic lives in api/session/queue - this module is presentation only.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QEvent, QMimeData, QSize, Qt, QThread, QTimer, QUrl, Signal
@@ -942,11 +942,65 @@ class Composer(QWidget):
 # queue
 # --------------------------------------------------------------------------
 
+class QueueEditDialog(QDialog):
+    """Reuse the composer controls to edit or copy a queued post."""
+
+    def __init__(self, item: dict, session: Session, duplicate: bool = False,
+                 limits: dict | None = None, parent=None):
+        super().__init__(parent)
+        self.item = item
+        self.duplicate = duplicate
+        self.setWindowTitle("Duplicate scheduled post" if duplicate else "Edit scheduled post")
+        self.composer = Composer(session, tokens=theme.tokens(dark=theme.is_dark(QApplication.instance())))
+        self.composer.set_limits(limits or {})
+        self.composer.post_now.hide()
+        self.composer.schedule.setText("Add copy to queue" if duplicate else "Save changes")
+        self.composer.schedule.clicked.disconnect()
+        self.composer.schedule.clicked.connect(self.save)
+        for image in item["images"]:
+            self.composer.add_paths([Path(image["path"])])
+            self.composer.tiles[-1].alt.setText(image.get("alt") or "")
+        self.composer.caption.setPlainText(item.get("caption") or "")
+        self.composer.set_visibility(item.get("visibility") or "public")
+        scheduled = datetime.fromisoformat(item["post_at"]).astimezone()
+        if duplicate and scheduled <= datetime.now().astimezone():
+            scheduled = datetime.now().astimezone() + timedelta(hours=1)
+        self.composer.when.setDateTime(QDateTime(scheduled))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.composer)
+        self.resize(740, 640)
+
+    def save(self):
+        images = self.composer.gather()
+        if images is None:
+            return
+        when = self.composer.when.dateTime().toPython()
+        if when.tzinfo is None:
+            when = when.astimezone()
+        try:
+            if self.duplicate:
+                pfqueue.add(images, self.composer.caption.toPlainText(),
+                            self.composer.visibility_value(), when)
+            else:
+                pfqueue.edit(
+                    self.item["id"], images=images,
+                    caption=self.composer.caption.toPlainText(),
+                    visibility=self.composer.visibility_value(), when=when,
+                    expected_revision=self.item.get("revision", 0))
+        except (pfqueue.QueueError, OSError) as exc:
+            QMessageBox.critical(self, "pfpost", str(exc))
+            return
+        self.accept()
+
+
 class QueueRow(QFrame):
     """One queued post: thumbnail, caption, when and where, status, one action."""
 
     remove_requested = Signal(str)
     open_requested = Signal(str)
+    edit_requested = Signal(str)
+    duplicate_requested = Signal(str)
 
     def __init__(self, item: dict, tokens: dict, first: bool, parent=None):
         super().__init__(parent)
@@ -1028,6 +1082,18 @@ class QueueRow(QFrame):
         layout.addWidget(thumb)
         layout.addLayout(column, 1)
         layout.addWidget(self.pill, 0, Qt.AlignVCenter)
+        if status == "pending":
+            self.edit_button = QToolButton()
+            self.edit_button.setText("Edit")
+            self.edit_button.setToolTip("Edit scheduled post")
+            self.edit_button.clicked.connect(lambda: self.edit_requested.emit(item["id"]))
+            layout.addWidget(self.edit_button, 0, Qt.AlignVCenter)
+            self.duplicate_button = QToolButton()
+            self.duplicate_button.setText("Copy")
+            self.duplicate_button.setToolTip("Duplicate scheduled post")
+            self.duplicate_button.clicked.connect(
+                lambda: self.duplicate_requested.emit(item["id"]))
+            layout.addWidget(self.duplicate_button, 0, Qt.AlignVCenter)
         layout.addWidget(self.action, 0, Qt.AlignVCenter)
 
 
@@ -1285,6 +1351,8 @@ class QueuePanel(QWidget):
             row = QueueRow(item, self.tokens, first=index == 0)
             row.remove_requested.connect(self.remove_item)
             row.open_requested.connect(self.open_post)
+            row.edit_requested.connect(self.edit_item)
+            row.duplicate_requested.connect(self.duplicate_item)
             self.list_layout.insertWidget(index, row)
             self.rows.append(row)
         self.empty.setVisible(not self.rows)
@@ -1299,6 +1367,26 @@ class QueuePanel(QWidget):
         self.clear_button.setText("Clear posted (%d)" % finished if finished
                                   else "Clear posted")
         self.pending_changed.emit(tally.get("pending", 0))
+
+    def _open_editor(self, item_id: str, duplicate: bool):
+        item = next((i for i in pfqueue.items(include_done=True)
+                     if i["id"] == item_id), None)
+        if item is None or item["status"] != "pending":
+            self.reload()
+            QMessageBox.warning(self, "pfpost", "This post is no longer pending.")
+            return
+        limits = getattr(self, "composer_limits", {})
+        dialog = QueueEditDialog(item, self.session, duplicate=duplicate,
+                                 limits=limits, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self.reload()
+            self.changed.emit("Copy queued" if duplicate else "Scheduled post updated")
+
+    def edit_item(self, item_id: str):
+        self._open_editor(item_id, False)
+
+    def duplicate_item(self, item_id: str):
+        self._open_editor(item_id, True)
 
     def remove_item(self, item_id: str):
         item = next((i for i in pfqueue.items(include_done=True) if i["id"] == item_id), None)
@@ -1644,6 +1732,7 @@ class MainWindow(QMainWindow):
     def account_loaded(self, result):
         limits, username = result
         self.composer.set_limits(limits)
+        self.queue_panel.composer_limits = limits
         self.top_bar.show_state(self.session.status(), username)
         detail = []
         if limits.get("max_media_attachments"):
