@@ -542,3 +542,10 @@ to GitHub's public releases API. Nothing checks for updates on its own.
 As with any small open-source project, read the code before trusting it with an
 account. `pfpost/store.py` and `pfpost/session.py` are the parts that handle
 credentials.
+
+## Support
+
+Everything on my GitHub is free of charge and open source. If you find it
+useful and want to leave a tip or buy me a coffee, you can do that at
+[ko-fi.com/morrowheat23](https://ko-fi.com/morrowheat23). It's appreciated,
+never expected.
