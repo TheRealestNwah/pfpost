@@ -1,3 +1,4 @@
+.dev/
 *.egg-info/
 *.py[cod]
 *.spec
