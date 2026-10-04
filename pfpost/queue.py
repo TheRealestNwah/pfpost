@@ -379,6 +379,7 @@ def run(session, limit: int = 0, on_event=None) -> list[dict]:
             result = client.publish(images, live["caption"], live["visibility"])
             try:
                 posting_session.learn_from_status(result)
+                store.save_recent_hashtags(api.hashtags(live["caption"]))
             except Exception:
                 pass            # a convenience; never fail a published post over it
             live["status"] = "posted"

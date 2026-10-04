@@ -168,7 +168,8 @@ pfpost-gui.exe
 Two tabs across the top. **Compose** holds the new post: drop images onto it or
 use **Add images**, drag thumbnails to set carousel order (or use their left and
 right move buttons), give each image its alt text under its thumbnail, write a
-caption against a live character counter, pick who sees it, then **Post now**
+caption against a live character counter (**Reuse hashtags** adds the hashtags
+from the last post pfpost published, on any account), pick who sees it, then **Post now**
 or pick a time and **Add to queue**. **Queue** lists what's pending (soonest
 first) and what's been posted, each with a status pill; hover a failed item to
 see the error. The tab shows how many posts are pending.
@@ -309,6 +310,8 @@ Flags:
 
 - `--visibility public|unlisted|private` (default `public`)
 - `--dry-run` validates files, caption length and attachment count without uploading
+- `--reuse-tags` appends the hashtags from the last post pfpost published, on any
+  account (also works with `queue add`)
 
 Check what the instance allows (works without auth):
 

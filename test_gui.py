@@ -145,7 +145,7 @@ def main():
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QColor, QImage
     from PySide6.QtWidgets import QApplication as _QApp
-    from pfpost import theme as pftheme
+    from pfpost import store, theme as pftheme
     from pfpost.gui import ConnectDialog, MainWindow, QueueEditDialog
     from pfpost.session import Session
 
@@ -227,6 +227,20 @@ def main():
     check("counter flags an over-long caption",
           TOKENS["danger"] in composer.counter.styleSheet(),
           composer.counter.styleSheet())
+
+    store.recent_path().unlink(missing_ok=True)
+    composer.caption.setPlainText("Sunset #sea")
+    composer.reuse_tags.click()
+    check("Reuse hashtags with none saved leaves the caption alone",
+          composer.caption.toPlainText() == "Sunset #sea")
+    store.save_recent_hashtags(["#Sea", "#sunset"])
+    composer.refresh_reuse_tags()
+    check("its tooltip lists the saved hashtags",
+          "#Sea #sunset" in composer.reuse_tags.toolTip(), composer.reuse_tags.toolTip())
+    composer.reuse_tags.click()
+    check("Reuse hashtags appends only the missing ones",
+          composer.caption.toPlainText() == "Sunset #sea\n\n#sunset",
+          repr(composer.caption.toPlainText()))
 
     composer.caption.setPlainText("ok")
     check("gather accepts a valid post", composer.gather() is not None)

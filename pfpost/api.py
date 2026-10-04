@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import re
 import secrets
 import urllib.error
 import urllib.parse
@@ -318,6 +319,31 @@ def link_triggers(caption: str, visibility: str) -> list[str]:
         return []
     return [word for word in caption.split()
             if any(marker in word for marker in LINK_MARKERS)]
+
+
+# A '#' not glued to a word or URL (so "a#b" and "page#top" don't count),
+# then word characters with at least one letter: "#2026" is not a tag.
+_HASHTAG = re.compile(r"(?<![\w#&/])#(\w*[^\W\d_]\w*)")
+
+
+def hashtags(caption: str) -> list[str]:
+    """The caption's hashtags, with '#', in order, without case-blind repeats."""
+    seen, tags = set(), []
+    for name in _HASHTAG.findall(caption or ""):
+        if name.casefold() not in seen:
+            seen.add(name.casefold())
+            tags.append("#" + name)
+    return tags
+
+
+def add_hashtags(caption: str, tags: list[str]) -> str:
+    """The caption with any of `tags` it lacks appended on their own line."""
+    have = {t.casefold() for t in hashtags(caption)}
+    missing = [t for t in tags if t.casefold() not in have]
+    if not missing:
+        return caption
+    text = (caption or "").rstrip()
+    return (text + "\n\n" if text else "") + " ".join(missing)
 
 
 def status_username(status: dict) -> str | None:
