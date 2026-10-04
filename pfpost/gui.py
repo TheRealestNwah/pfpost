@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QEvent, QMimeData, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QDrag, QIcon, QPixmap, QTextCharFormat
+from PySide6.QtGui import QAction, QDesktopServices, QDrag, QIcon, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDateTimeEdit, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
@@ -631,6 +631,10 @@ class Composer(QWidget):
         self.caption.textChanged.connect(self.update_counter)
         self.counter = styled_label("0 characters", "hint")
         self.counter.setAlignment(Qt.AlignRight)
+        self.reuse_tags = QPushButton("Reuse hashtags")
+        self.reuse_tags.setProperty("flat", True)
+        self.reuse_tags.clicked.connect(self.add_recent_hashtags)
+        self.refresh_reuse_tags()
 
         visibility_label = styled_label("Visibility", "label")
         self.visibility = QComboBox()
@@ -692,7 +696,11 @@ class Composer(QWidget):
         inner.addWidget(self.strip_area)
         inner.addWidget(caption_label)
         inner.addWidget(self.caption)
-        inner.addWidget(self.counter)
+        counter_row = QHBoxLayout()
+        counter_row.addWidget(self.reuse_tags)
+        counter_row.addStretch()
+        counter_row.addWidget(self.counter)
+        inner.addLayout(counter_row)
         inner.addLayout(visibility_row)
         inner.addStretch(1)
         inner.addWidget(divider())
@@ -774,6 +782,32 @@ class Composer(QWidget):
         self.caption.setPlainText("")
         self.update_counter()
         store.clear_draft()      # the work left the composer; nothing to restore
+
+    def refresh_reuse_tags(self):
+        # The queue runner posts from another process, so look again each time.
+        tags = store.load_recent_hashtags()
+        self.reuse_tags.setToolTip(
+            "Add the hashtags from the last post this app published, on any account:\n"
+            + " ".join(tags) if tags else "No post with hashtags yet")
+
+    def add_recent_hashtags(self):
+        tags = store.load_recent_hashtags()
+        self.refresh_reuse_tags()
+        if not tags:
+            self.status.emit("No earlier post with hashtags to reuse.")
+            return
+        text = self.caption.toPlainText()
+        updated = api.add_hashtags(text, tags)
+        if updated == text:
+            self.status.emit("The caption already has those hashtags.")
+            return
+        self.caption.setPlainText(updated)
+        self.caption.moveCursor(QTextCursor.End)
+        self.caption.setFocus()
+
+    def showEvent(self, event):
+        self.refresh_reuse_tags()
+        super().showEvent(event)
 
     def visibility_value(self) -> str:
         return self.visibility.currentData() or "public"
@@ -947,6 +981,7 @@ class Composer(QWidget):
         # Held for the whole upload: switching accounts meanwhile must not
         # change who it came from.
         self._posting_session = session = self.session
+        self._posted_caption = caption
         self.busy(True)
         self.status.emit("Uploading %d file(s) as %s ..." % (len(images), session.label))
 
@@ -962,8 +997,10 @@ class Composer(QWidget):
         self.busy(False)
         try:
             getattr(self, "_posting_session", self.session).learn_from_status(result)
+            store.save_recent_hashtags(api.hashtags(self._posted_caption))
         except Exception:
             pass                # a convenience; never fail a published post over it
+        self.refresh_reuse_tags()
         self.clear()
         self.posted.emit(result.get("url") or "(posted)")
 

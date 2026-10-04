@@ -70,6 +70,10 @@ def prefs_path() -> Path:
     return config_dir() / "prefs.json"
 
 
+def recent_path() -> Path:
+    return config_dir() / "recent.json"
+
+
 def staged_dir(item_id: str | None = None) -> Path:
     """Where queued images are copied to.
 
@@ -309,4 +313,23 @@ def set_pref(key: str, value) -> None:
     p = prefs_path()
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def load_recent_hashtags() -> list[str]:
+    """Hashtags from the last post this app published that had any, on any account."""
+    try:
+        tags = json.loads(recent_path().read_text(encoding="utf-8")).get("hashtags")
+    except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        return []
+    return [t for t in tags if isinstance(t, str)] if isinstance(tags, list) else []
+
+
+def save_recent_hashtags(tags: list[str]) -> None:
+    # A post without hashtags keeps the last set: there would be nothing to reuse.
+    if not tags:
+        return
+    p = recent_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"hashtags": list(tags)}, indent=2), encoding="utf-8")
     tmp.replace(p)

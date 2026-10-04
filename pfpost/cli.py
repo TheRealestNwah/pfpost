@@ -168,9 +168,20 @@ def cmd_info(args):
         print("\n" + advice)
 
 
+def reuse_tags(args):
+    """Append the last post's hashtags to args.caption when --reuse-tags asks."""
+    if not args.reuse_tags:
+        return
+    tags = store.load_recent_hashtags()
+    if not tags:
+        print("Note: no earlier post with hashtags to reuse.", file=sys.stderr)
+    args.caption = api.add_hashtags(args.caption, tags)
+
+
 def cmd_post(args):
     session = session_for(args)
     images = collect_images(args.images, args.alt)
+    reuse_tags(args)
     try:
         limits = session.public_client().limits()
         api.validate(images, args.caption, limits)
@@ -203,6 +214,7 @@ def cmd_post(args):
         die(exc)
     try:
         session.learn_from_status(result)
+        store.save_recent_hashtags(api.hashtags(args.caption))
     except Exception:
         pass                # a convenience; never fail a published post over it
     print("\nPosted: %s" % (result.get("url") or result.get("uri") or "(no url returned)"))
@@ -211,6 +223,7 @@ def cmd_post(args):
 def cmd_queue_add(args):
     session = session_for(args)
     images = collect_images(args.images, args.alt)
+    reuse_tags(args)
     try:
         when = pfqueue.parse_when(args.at)
         item = pfqueue.add(images, args.caption, args.visibility, when,
@@ -527,6 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
     post.add_argument("--alt", "-a", action="append", default=[],
                       help="alt text; once for all images or once per image")
     post.add_argument("--visibility", "-v", default="public", choices=VISIBILITIES)
+    post.add_argument("--reuse-tags", action="store_true", help="append the hashtags from the app's last post")
     post.add_argument("--dry-run", action="store_true", help="validate without uploading")
     post.set_defaults(func=cmd_post)
 
@@ -538,6 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
     qadd.add_argument("--caption", "-c", default="")
     qadd.add_argument("--alt", "-a", action="append", default=[])
     qadd.add_argument("--visibility", "-v", default="public", choices=VISIBILITIES)
+    qadd.add_argument("--reuse-tags", action="store_true", help="append the hashtags from the app's last post")
     qadd.add_argument("--at", required=True,
                       help="'2026-09-10 17:00' (local) or relative like +2h")
     qadd.set_defaults(func=cmd_queue_add)

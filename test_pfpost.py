@@ -874,6 +874,41 @@ def main():
           str(queued_learner.state.get("username")))
     pfqueue.store.save_queue({"items": []})
 
+    print("\n5c. reusing the last post's hashtags")
+    tagged = "Fog #Landscape, #fog!\n#landscape #b&w #misty_morning"
+    check("finds hashtags in order, without case-blind repeats",
+          api.hashtags(tagged) == ["#Landscape", "#fog", "#b", "#misty_morning"],
+          str(api.hashtags(tagged)))
+    check("skips anchors, numbers, entities and doubled #",
+          api.hashtags("x.com/page#top a#b #2026 &#39; ##x") == [],
+          str(api.hashtags("x.com/page#top a#b #2026 &#39; ##x")))
+    check("appends missing tags on their own line",
+          api.add_hashtags("New photo #fog  ", ["#Fog", "#hills"]) == "New photo #fog\n\n#hills")
+    check("an empty caption becomes just the tags",
+          api.add_hashtags("", ["#a", "#b"]) == "#a #b")
+    check("nothing to add leaves the caption alone",
+          api.add_hashtags("hi #a ", ["#A"]) == "hi #a ")
+    store.recent_path().unlink(missing_ok=True)
+    check("no recent hashtags before any post", store.load_recent_hashtags() == [])
+    store.save_recent_hashtags(["#a"])
+    store.save_recent_hashtags([])
+    check("a post without hashtags keeps the last set", store.load_recent_hashtags() == ["#a"])
+    store.recent_path().write_text("[1, 2]", encoding="utf-8")
+    check("a damaged recent file reads as none", store.load_recent_hashtags() == [])
+    pfqueue.add([(img_a, "alt")], "queued #Sunset #sea", "public",
+                datetime.now(timezone.utc) - timedelta(minutes=1))
+    pfqueue.run(queued_learner)
+    check("a queued post remembers its hashtags",
+          store.load_recent_hashtags() == ["#Sunset", "#sea"], str(store.load_recent_hashtags()))
+    pfqueue.store.save_queue({"items": []})
+    RECEIVED.clear()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        pfcli.main(["post", str(img_a), "--alt", "a", "-c", "Evening #sea", "--reuse-tags"])
+    sent = [r[3]["status"][0] for r in RECEIVED if r[1] == "/api/v1/statuses"]
+    check("--reuse-tags appends the missing ones", sent == ["Evening #sea\n\n#Sunset"], str(sent))
+    check("the CLI post becomes the new recent set",
+          store.load_recent_hashtags() == ["#sea", "#Sunset"], str(store.load_recent_hashtags()))
+
     signed_out = Session({"instance": "gram.social", "username": "nmorrow08"})
     signed_out.save = lambda: None
     signed_out.disconnect(forget_client=False)
