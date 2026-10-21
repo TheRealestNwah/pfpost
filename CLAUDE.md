@@ -29,3 +29,17 @@ CI (Windows, Python 3.13, job "Lint and test") runs ruff, both test files and `b
 - Release binaries come from CI, not a local build: the **Release** workflow (or a `v<version>` tag matching `__version__`) builds and attaches to a draft release; **Publish release** publishes it.
 - If the Python version changes, delete `.venv` and recreate it. `build.py` restricts PyInstaller's native-library search path so stray Qt DLLs aren't bundled.
 - `.dev/` is gitignored scratch space.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
