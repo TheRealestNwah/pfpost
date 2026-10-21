@@ -10,3 +10,6 @@ __pycache__/
 build/
 dist/
 venv/
+
+# Private agent notes (CLAUDE.md is shared)
+CLAUDE.local.md
